@@ -25,6 +25,7 @@
 -dontwarn org.videolan.libvlc.**
 
 # Keep Embedded Downloader Engines (yt-dlp, FFmpeg, Aria2c)
+-keep class com.yausername.** { *; }
 -keep class com.yausername.youtubedl_android.** { *; }
 -keep class com.yausername.ffmpeg.** { *; }
 -keep class com.yausername.aria2c.** { *; }

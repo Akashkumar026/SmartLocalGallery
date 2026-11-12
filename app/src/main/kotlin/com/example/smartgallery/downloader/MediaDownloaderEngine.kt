@@ -16,9 +16,13 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
+import com.yausername.ffmpeg.FFmpeg
+import com.yausername.aria2c.Aria2c
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -33,6 +37,38 @@ class MediaDownloaderEngine @Inject constructor(
     private val settings: SettingsRepository,
     private val profiler: DeviceCapabilityProfiler
 ) {
+    private val initMutex = Mutex()
+    @Volatile private var isYtdlReady = false
+    @Volatile private var isFfmpegReady = false
+    @Volatile private var isAria2cReady = false
+
+    suspend fun ensureInitialized(ctx: Context = context) = initMutex.withLock {
+        val appCtx = ctx.applicationContext
+        if (!isYtdlReady) {
+            try {
+                YoutubeDL.getInstance().init(appCtx)
+                isYtdlReady = true
+                Log.d(TAG, "YoutubeDL engine initialized successfully via Mutex.")
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed initializing YoutubeDL: ${t.message}", t)
+            }
+        }
+        if (!isFfmpegReady) {
+            runCatching {
+                FFmpeg.getInstance().init(appCtx)
+                isFfmpegReady = true
+                Log.d(TAG, "FFmpeg engine initialized successfully via Mutex.")
+            }.onFailure { Log.w(TAG, "FFmpeg init notice: ${it.message}") }
+        }
+        if (!isAria2cReady) {
+            runCatching {
+                Aria2c.getInstance().init(appCtx)
+                isAria2cReady = true
+                Log.d(TAG, "Aria2c engine initialized successfully via Mutex.")
+            }.onFailure { Log.w(TAG, "Aria2c init notice: ${it.message}") }
+        }
+    }
+
     companion object {
         private const val TAG = "MediaDownloaderEngine"
 
@@ -120,6 +156,7 @@ class MediaDownloaderEngine @Inject constructor(
      * Inspects media URL and extracts metadata without initiating download.
      */
     suspend fun fetchMediaInfo(url: String): MediaInfoResult = withContext(Dispatchers.IO) {
+        ensureInitialized(context)
         val appSettings = settings.settingsFlow.first()
         if (appSettings.strictOfflineLockdown) {
             throw SecurityException("Strict Offline Lockdown is active. Network requests are completely blocked.")
@@ -171,6 +208,7 @@ class MediaDownloaderEngine @Inject constructor(
         task: DownloadTask,
         onProgress: (progress: Float, downloadedBytes: Long, totalBytes: Long, speed: Long, etaSecs: Long) -> Unit
     ): File = withContext(Dispatchers.IO) {
+        ensureInitialized(context)
         val appSettings = settings.settingsFlow.first()
         if (appSettings.strictOfflineLockdown) {
             throw SecurityException("Strict Offline Lockdown is active.")

@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.CallMerge
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -760,8 +761,12 @@ fun AlbumsScreen(
     var selectedSmartCategory by remember { mutableStateOf<Pair<String, String>?>(null) }
     var editingCluster by remember { mutableStateOf<PersonCluster?>(null) }
     var editedName by remember { mutableStateOf("") }
+    var selectedClusterIdsForMerge by remember { mutableStateOf<Set<Long>>(emptySet()) }
     val context = LocalContext.current
 
+    BackHandler(enabled = selectedClusterIdsForMerge.isNotEmpty()) {
+        selectedClusterIdsForMerge = emptySet()
+    }
     BackHandler(enabled = selectedAlbum != null) {
         selectedAlbum = null
     }
@@ -840,14 +845,25 @@ fun AlbumsScreen(
     }
 
     if (selectedPersonCluster != null) {
-        // Detailed Person Cluster view
+        // Detailed Person Cluster view (Duplicate-free distinct photos)
         val cluster = selectedPersonCluster!!
-        val filtered = remember(cluster, items) {
-            items.filter { item ->
-                item.id == cluster.coverMediaId ||
-                item.faceEmbeddingIds.contains("\"${cluster.id}\"") ||
-                item.faceEmbeddingIds.contains(cluster.id.toString())
+        val clusterPhotos by viewModel.getPhotosForPersonCluster(cluster.id).collectAsStateWithLifecycle(initialValue = emptyList())
+        val filtered = remember(clusterPhotos, items, cluster) {
+            val sourceList = if (clusterPhotos.isNotEmpty()) clusterPhotos else {
+                items.filter { item -> item.id == cluster.coverMediaId }
             }
+            val seenIds = mutableSetOf<Long>()
+            val seenHashes = mutableSetOf<String>()
+            val deduped = mutableListOf<MediaItem>()
+            for (media in sourceList) {
+                if (seenIds.add(media.id)) {
+                    val hash = media.xxHash64
+                    if (hash.isNullOrBlank() || seenHashes.add(hash)) {
+                        deduped.add(media)
+                    }
+                }
+            }
+            deduped
         }
 
         Scaffold(
@@ -1408,7 +1424,7 @@ fun AlbumsScreen(
                 }
             }
 
-            // ── Section 2: Person Clusters (Faces) ──
+            // ── Section 2: Person Clusters (Faces & People) ──
             item {
                 Row(
                     modifier = Modifier
@@ -1422,17 +1438,45 @@ fun AlbumsScreen(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    if (isFaceScanning) {
+
+                    if (selectedClusterIdsForMerge.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            FilledTonalButton(
+                                onClick = {
+                                    val selected = personClusters.filter { it.id in selectedClusterIdsForMerge }
+                                    if (selected.size >= 2) {
+                                        viewModel.mergeClusters(selected[0], selected[1])
+                                    }
+                                    selectedClusterIdsForMerge = emptySet()
+                                },
+                                enabled = selectedClusterIdsForMerge.size >= 2
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.CallMerge, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Merge (${selectedClusterIdsForMerge.size})", fontSize = 12.sp)
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            TextButton(onClick = { selectedClusterIdsForMerge = emptySet() }) {
+                                Text("Cancel", fontSize = 12.sp)
+                            }
+                        }
+                    } else if (isFaceScanning) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(6.dp))
                             Text("Scanning AI...", style = MaterialTheme.typography.bodySmall)
                         }
                     } else {
-                        TextButton(onClick = { viewModel.scanFacesNow() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (personClusters.isEmpty()) "Scan Faces" else "Re-scan", fontSize = 12.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { viewModel.scanFacesNow() }) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(2.dp))
+                                Text(if (personClusters.isEmpty()) "Scan" else "Re-scan", fontSize = 12.sp)
+                            }
+                            Spacer(Modifier.width(2.dp))
+                            TextButton(onClick = { viewModel.reIndexFaces() }) {
+                                Text("Re-Index Faces", fontSize = 12.sp)
+                            }
                         }
                     }
                 }
@@ -1446,15 +1490,30 @@ fun AlbumsScreen(
                     ) {
                         items(items = personClusters, key = { it.id }) { cluster ->
                             val coverItem = items.firstOrNull { it.id == cluster.coverMediaId }
+                            val isClusterSelected = selectedClusterIdsForMerge.contains(cluster.id)
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 modifier = Modifier
                                     .width(80.dp)
                                     .combinedClickable(
-                                        onClick = { selectedPersonCluster = cluster },
+                                        onClick = {
+                                            if (selectedClusterIdsForMerge.isNotEmpty()) {
+                                                selectedClusterIdsForMerge = if (isClusterSelected) {
+                                                    selectedClusterIdsForMerge - cluster.id
+                                                } else {
+                                                    selectedClusterIdsForMerge + cluster.id
+                                                }
+                                            } else {
+                                                selectedPersonCluster = cluster
+                                            }
+                                        },
                                         onLongClick = {
-                                            editedName = cluster.displayName
-                                            editingCluster = cluster
+                                            if (selectedClusterIdsForMerge.isEmpty()) {
+                                                selectedClusterIdsForMerge = setOf(cluster.id)
+                                            } else {
+                                                editedName = cluster.displayName
+                                                editingCluster = cluster
+                                            }
                                         }
                                     )
                             ) {
@@ -1478,6 +1537,22 @@ fun AlbumsScreen(
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.onPrimaryContainer
                                         )
+                                    }
+
+                                    if (isClusterSelected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                Icons.Default.CheckCircle,
+                                                contentDescription = "Selected",
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(28.dp)
+                                            )
+                                        }
                                     }
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))

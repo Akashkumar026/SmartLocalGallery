@@ -85,3 +85,4 @@ Download the production-ready APK directly from GitHub Releases:
 
 ## 📄 License
 Open source under the [Apache License 2.0](LICENSE).
+

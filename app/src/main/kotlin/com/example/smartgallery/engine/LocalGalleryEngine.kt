@@ -654,30 +654,41 @@ class LocalGalleryEngine @Inject constructor(
         burstGroups
     }
 
-    // ─── 5. 99% Accuracy Face Clustering Pipeline ──────────────────────────
+    // ─── 5. High-Precision Face Clustering & Duplicate-Free People Groups ──
 
-    fun alignFace(
+    fun alignFaceAffine(
         sourceBitmap: Bitmap,
-        leftEye: PointF,
-        rightEye: PointF,
-        noseTip: PointF,
-        leftMouth: PointF,
-        rightMouth: PointF
-    ): Bitmap {
-        // MobileFaceNet standard 112x112 anchor points
-        val dstPoints = floatArrayOf(
-            30.29f, 51.70f, // Left eye
-            65.53f, 51.50f, // Right eye
-            48.02f, 71.74f  // Nose tip
-        )
-        val srcPoints = floatArrayOf(
-            leftEye.x, leftEye.y,
-            rightEye.x, rightEye.y,
-            noseTip.x, noseTip.y
-        )
+        face: Face
+    ): Bitmap? {
+        val box = face.boundingBox
+        if (box.width() < 56 || abs(face.headEulerAngleY) > 32f) {
+            return null
+        }
+
+        val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position
+        val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+
+        val angleDeg = if (leftEye != null && rightEye != null) {
+            val dy = (rightEye.y - leftEye.y).toDouble()
+            val dx = (rightEye.x - leftEye.x).toDouble()
+            Math.toDegrees(Math.atan2(dy, dx)).toFloat()
+        } else {
+            0f
+        }
+
+        val centerX = box.exactCenterX()
+        val centerY = box.exactCenterY()
+        val maxDim = max(box.width(), box.height()).toFloat()
+        val halfDim = (maxDim / 2f) * 1.22f // 22% expanded margin
+
+        if (halfDim <= 0f) return null
 
         val matrix = Matrix()
-        matrix.setPolyToPoly(srcPoints, 0, dstPoints, 0, 3)
+        matrix.postTranslate(-centerX, -centerY)
+        matrix.postRotate(-angleDeg)
+        val scale = FACE_INPUT_SIZE / (halfDim * 2f)
+        matrix.postScale(scale, scale)
+        matrix.postTranslate(FACE_INPUT_SIZE / 2f, FACE_INPUT_SIZE / 2f)
 
         val aligned = Bitmap.createBitmap(FACE_INPUT_SIZE, FACE_INPUT_SIZE, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(aligned)
@@ -738,31 +749,46 @@ class LocalGalleryEngine @Inject constructor(
 
         fun extract(alignedFace: Bitmap): FloatArray {
             val interp = interpreter ?: return FloatArray(EMBEDDING_SIZE)
-            val inputBuffer = ByteBuffer.allocateDirect(1 * FACE_INPUT_SIZE * FACE_INPUT_SIZE * 3 * 4)
-            inputBuffer.order(ByteOrder.nativeOrder())
+            val isFloat = try {
+                interp.getInputTensor(0).dataType() == org.tensorflow.lite.DataType.FLOAT32
+            } catch (_: Throwable) {
+                true
+            }
+
+            val byteBuffer = if (isFloat) {
+                ByteBuffer.allocateDirect(1 * FACE_INPUT_SIZE * FACE_INPUT_SIZE * 3 * 4)
+            } else {
+                ByteBuffer.allocateDirect(1 * FACE_INPUT_SIZE * FACE_INPUT_SIZE * 3)
+            }
+            byteBuffer.order(ByteOrder.nativeOrder())
 
             val intValues = IntArray(FACE_INPUT_SIZE * FACE_INPUT_SIZE)
             alignedFace.getPixels(intValues, 0, FACE_INPUT_SIZE, 0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE)
 
             for (pixel in intValues) {
-                // Normalize to [-1.0, 1.0]
-                val r = ((pixel shr 16 and 0xFF) - 127.5f) / 128.0f
-                val g = ((pixel shr 8 and 0xFF) - 127.5f) / 128.0f
-                val b = ((pixel and 0xFF) - 127.5f) / 128.0f
-                inputBuffer.putFloat(r)
-                inputBuffer.putFloat(g)
-                inputBuffer.putFloat(b)
+                val r = (pixel shr 16 and 0xFF)
+                val g = (pixel shr 8 and 0xFF)
+                val b = (pixel and 0xFF)
+                if (isFloat) {
+                    byteBuffer.putFloat((r - 127.5f) / 128.0f)
+                    byteBuffer.putFloat((g - 127.5f) / 128.0f)
+                    byteBuffer.putFloat((b - 127.5f) / 128.0f)
+                } else {
+                    byteBuffer.put(r.toByte())
+                    byteBuffer.put(g.toByte())
+                    byteBuffer.put(b.toByte())
+                }
             }
 
             val outputBuffer = Array(1) { FloatArray(EMBEDDING_SIZE) }
-            interpreter?.run(inputBuffer, outputBuffer)
+            interp.run(byteBuffer, outputBuffer)
 
-            // L2-normalize embedding vector
+            // L2-normalize 192D output vector: v[i] /= sqrt(sum(v^2))
             val raw = outputBuffer[0]
-            var norm = 0f
-            for (f in raw) norm += f * f
-            norm = sqrt(norm)
-            if (norm > 0) {
+            var sumSq = 0f
+            for (f in raw) sumSq += f * f
+            val norm = sqrt(sumSq)
+            if (norm > 0f) {
                 for (i in raw.indices) raw[i] /= norm
             }
             return raw
@@ -774,12 +800,22 @@ class LocalGalleryEngine @Inject constructor(
         }
     }
 
-    fun cosineDistance(vecA: FloatArray, vecB: FloatArray): Float {
+    fun cosineSimilarity(vecA: FloatArray, vecB: FloatArray): Float {
         var dot = 0f
-        for (i in vecA.indices) {
+        val len = min(vecA.size, vecB.size)
+        for (i in 0 until len) {
             dot += vecA[i] * vecB[i]
         }
-        return (1f - dot).coerceIn(0f, 2f)
+        return dot.coerceIn(-1f, 1f)
+    }
+
+    fun normalizeVector(vec: FloatArray) {
+        var sumSq = 0f
+        for (f in vec) sumSq += f * f
+        val norm = sqrt(sumSq)
+        if (norm > 0f) {
+            for (i in vec.indices) vec[i] /= norm
+        }
     }
 
     fun floatArrayToByteArray(floats: FloatArray): ByteArray {
@@ -795,12 +831,22 @@ class LocalGalleryEngine @Inject constructor(
         return floats
     }
 
+    private data class MutableCluster(
+        val id: Long,
+        var displayName: String,
+        var coverMediaId: Long,
+        var bestScore: Float,
+        var faceCount: Int,
+        var centroid: FloatArray
+    )
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    suspend fun scanFaces(threshold: Float = 0.72f, forceRescan: Boolean = false) = withContext(Dispatchers.Default.limitedParallelism(profiler.aiWorkerParallelism)) {
+    suspend fun scanFaces(threshold: Float = 0.64f, forceRescan: Boolean = false) = withContext(Dispatchers.Default.limitedParallelism(profiler.aiWorkerParallelism)) {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
         val detectorOpts = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+            .setMinFaceSize(0.12f)
             .build()
         val detector = FaceDetection.getClient(detectorOpts)
         val extractor = FaceEmbeddingExtractor(context, profiler.deviceTier)
@@ -810,10 +856,30 @@ class LocalGalleryEngine @Inject constructor(
             return@withContext
         }
 
+        // Initialize active clusters from database if continuing previous scan
+        val activeClusters = mutableListOf<MutableCluster>()
+        if (!forceRescan) {
+            val existing = db.personClusterDao().getAllSync()
+            for (c in existing) {
+                val cent = c.centroid?.let { byteArrayToFloatArray(it) } ?: continue
+                activeClusters.add(
+                    MutableCluster(
+                        id = c.id,
+                        displayName = c.displayName,
+                        coverMediaId = c.coverMediaId,
+                        bestScore = 0f,
+                        faceCount = c.faceCount,
+                        centroid = cent
+                    )
+                )
+            }
+        }
+
         val images = db.mediaItemDao().getByType("IMAGE").first()
         var count = 0
         val yieldInterval = profiler.aiWorkerYieldInterval
 
+        // ─── PASS 1: Face Detection, Embedding & Centroid Assignment ─────────
         for (item in images) {
             count++
             if (count % yieldInterval == 0) {
@@ -835,57 +901,86 @@ class LocalGalleryEngine @Inject constructor(
                 val personIds = JSONArray()
 
                 for (face in faces) {
-                    // Reject faces with heavy Euler angles (head pose > 30 deg)
-                    if (abs(face.headEulerAngleY) > 30f || abs(face.headEulerAngleZ) > 30f) continue
+                    if (face.boundingBox.width() < 56 || abs(face.headEulerAngleY) > 32f) continue
 
-                    val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position ?: continue
-                    val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position ?: continue
-                    val nose = face.getLandmark(FaceLandmark.NOSE_BASE)?.position ?: continue
-                    val leftMouth = face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position ?: continue
-                    val rightMouth = face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position ?: continue
-
-                    val aligned = alignFace(bmp, leftEye, rightEye, nose, leftMouth, rightMouth)
+                    val aligned = alignFaceAffine(bmp, face) ?: continue
                     val embedding = extractor.extract(aligned)
                     aligned.recycle()
 
-                    // Match against known person clusters
-                    val existingEmbeddings = db.faceEmbeddingDao().getAllEmbeddings()
-                    var matchedPersonId: Long? = null
-                    var minDistance = Float.MAX_VALUE
+                    val faceScore = (face.boundingBox.width() * face.boundingBox.height()).toFloat() *
+                            (1f - abs(face.headEulerAngleY) / 45f).coerceIn(0.1f, 1f)
 
-                    for (emb in existingEmbeddings) {
-                        val knownVector = byteArrayToFloatArray(emb.embedding)
-                        val dist = cosineDistance(embedding, knownVector)
-                        if (dist < minDistance) {
-                            minDistance = dist
-                            if (dist <= (1f - threshold)) {
-                                matchedPersonId = emb.personId
-                            }
+                    // Find closest matching cluster by cosine similarity
+                    var bestSimilarity = -1f
+                    var bestCluster: MutableCluster? = null
+                    for (c in activeClusters) {
+                        val sim = cosineSimilarity(embedding, c.centroid)
+                        if (sim > bestSimilarity) {
+                            bestSimilarity = sim
+                            bestCluster = c
                         }
                     }
 
-                    val personId = matchedPersonId ?: run {
-                        // Create new person cluster
+                    val clusterId: Long
+                    if (bestSimilarity >= threshold && bestCluster != null) {
+                        // Assign to existing cluster & update running centroid: normalize(centroid * count + emb)
+                        clusterId = bestCluster.id
+                        val oldCount = bestCluster.faceCount
+                        val newCentroid = FloatArray(EMBEDDING_SIZE)
+                        for (i in 0 until EMBEDDING_SIZE) {
+                            newCentroid[i] = bestCluster.centroid[i] * oldCount + embedding[i]
+                        }
+                        normalizeVector(newCentroid)
+                        bestCluster.centroid = newCentroid
+                        bestCluster.faceCount = oldCount + 1
+                        if (faceScore > bestCluster.bestScore) {
+                            bestCluster.bestScore = faceScore
+                            bestCluster.coverMediaId = item.id
+                        }
+                        db.personClusterDao().updateClusterStats(
+                            clusterId,
+                            bestCluster.faceCount,
+                            bestCluster.coverMediaId,
+                            floatArrayToByteArray(bestCluster.centroid)
+                        )
+                    } else {
+                        // Create brand new person cluster
                         val newCluster = PersonCluster(
                             displayName = "Person #${(System.currentTimeMillis() % 1000).toInt() + count}",
                             coverMediaId = item.id,
-                            faceCount = 0,
+                            faceCount = 1,
+                            centroid = floatArrayToByteArray(embedding.copyOf()),
                             createdAt = System.currentTimeMillis(),
                             updatedAt = System.currentTimeMillis()
                         )
-                        db.personClusterDao().insert(newCluster)
-                    }
-
-                    // Increment face count
-                    val currentCluster = db.personClusterDao().getById(personId)
-                    if (currentCluster != null) {
-                        db.personClusterDao().update(
-                            currentCluster.copy(
-                                faceCount = currentCluster.faceCount + 1,
-                                updatedAt = System.currentTimeMillis()
+                        val newId = db.personClusterDao().insert(newCluster)
+                        clusterId = newId
+                        activeClusters.add(
+                            MutableCluster(
+                                id = newId,
+                                displayName = newCluster.displayName,
+                                coverMediaId = item.id,
+                                bestScore = faceScore,
+                                faceCount = 1,
+                                centroid = embedding.copyOf()
                             )
                         )
                     }
+
+                    // Insert into composite primary key cross-reference table (guarantees zero duplicate photos per person)
+                    db.personMediaCrossRefDao().insert(
+                        PersonMediaCrossRef(
+                            clusterId = clusterId,
+                            mediaId = item.id,
+                            faceScore = faceScore
+                        )
+                    )
+
+                    val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position
+                    val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+                    val nose = face.getLandmark(FaceLandmark.NOSE_BASE)?.position
+                    val leftMouth = face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position
+                    val rightMouth = face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position
 
                     val faceRectJson = JSONObject().apply {
                         put("left", face.boundingBox.left)
@@ -896,25 +991,25 @@ class LocalGalleryEngine @Inject constructor(
 
                     val faceEntity = FaceEmbedding(
                         mediaItemId = item.id,
-                        personId = personId,
+                        personId = clusterId,
                         embedding = floatArrayToByteArray(embedding),
                         faceRectJson = faceRectJson,
-                        leftEyeX = leftEye.x,
-                        leftEyeY = leftEye.y,
-                        rightEyeX = rightEye.x,
-                        rightEyeY = rightEye.y,
-                        noseTipX = nose.x,
-                        noseTipY = nose.y,
-                        leftMouthX = leftMouth.x,
-                        leftMouthY = leftMouth.y,
-                        rightMouthX = rightMouth.x,
-                        rightMouthY = rightMouth.y,
+                        leftEyeX = leftEye?.x ?: 0f,
+                        leftEyeY = leftEye?.y ?: 0f,
+                        rightEyeX = rightEye?.x ?: 0f,
+                        rightEyeY = rightEye?.y ?: 0f,
+                        noseTipX = nose?.x ?: 0f,
+                        noseTipY = nose?.y ?: 0f,
+                        leftMouthX = leftMouth?.x ?: 0f,
+                        leftMouthY = leftMouth?.y ?: 0f,
+                        rightMouthX = rightMouth?.x ?: 0f,
+                        rightMouthY = rightMouth?.y ?: 0f,
                         confidence = face.trackingId?.toFloat() ?: 1.0f,
                         createdAt = System.currentTimeMillis()
                     )
                     val embId = db.faceEmbeddingDao().insert(faceEntity)
                     embeddingIds.put(embId)
-                    personIds.put(personId)
+                    personIds.put(clusterId)
                 }
 
                 if (personIds.length() > 0) {
@@ -926,8 +1021,99 @@ class LocalGalleryEngine @Inject constructor(
                 bmp?.recycle()
             }
         }
+
+        // ─── PASS 2: Agglomerative Cluster Merge (Threshold >= 0.62f) ────────
+        val mergeThreshold = 0.62f
+        var mergedAny = true
+        while (mergedAny && activeClusters.size > 1) {
+            mergedAny = false
+            var highestSim = -1f
+            var pairA: MutableCluster? = null
+            var pairB: MutableCluster? = null
+
+            for (i in 0 until activeClusters.size) {
+                for (j in i + 1 until activeClusters.size) {
+                    val sim = cosineSimilarity(activeClusters[i].centroid, activeClusters[j].centroid)
+                    if (sim > highestSim) {
+                        highestSim = sim
+                        pairA = activeClusters[i]
+                        pairB = activeClusters[j]
+                    }
+                }
+            }
+
+            if (highestSim >= mergeThreshold && pairA != null && pairB != null) {
+                val countA = pairA.faceCount
+                val countB = pairB.faceCount
+                val totalCount = countA + countB
+
+                val mergedCentroid = FloatArray(EMBEDDING_SIZE)
+                for (k in 0 until EMBEDDING_SIZE) {
+                    mergedCentroid[k] = (pairA.centroid[k] * countA + pairB.centroid[k] * countB) / totalCount
+                }
+                normalizeVector(mergedCentroid)
+
+                val bestCover = if (pairA.bestScore >= pairB.bestScore) pairA.coverMediaId else pairB.coverMediaId
+                val bestScore = max(pairA.bestScore, pairB.bestScore)
+
+                pairA.faceCount = totalCount
+                pairA.centroid = mergedCentroid
+                pairA.coverMediaId = bestCover
+                pairA.bestScore = bestScore
+
+                // Atomically re-point cross-references & face embeddings
+                db.personMediaCrossRefDao().repointCluster(pairB.id, pairA.id)
+                db.faceEmbeddingDao().repointPersonId(pairB.id, pairA.id)
+                db.personClusterDao().updateClusterStats(
+                    pairA.id,
+                    pairA.faceCount,
+                    pairA.coverMediaId,
+                    floatArrayToByteArray(pairA.centroid)
+                )
+                db.personClusterDao().deleteById(pairB.id)
+
+                activeClusters.remove(pairB)
+                mergedAny = true
+                Log.i(TAG, "Agglomerative merge: merged cluster ${pairB.id} into ${pairA.id} (sim=$highestSim)")
+            }
+        }
+
         extractor.close()
         detector.close()
+    }
+
+    suspend fun mergeClustersManually(clusterA: PersonCluster, clusterB: PersonCluster) = withContext(Dispatchers.IO) {
+        val targetId = clusterA.id
+        val sourceId = clusterB.id
+        if (targetId == sourceId) return@withContext
+
+        db.personMediaCrossRefDao().repointCluster(sourceId, targetId)
+        db.faceEmbeddingDao().repointPersonId(sourceId, targetId)
+
+        val centroidA = clusterA.centroid?.let { byteArrayToFloatArray(it) }
+        val centroidB = clusterB.centroid?.let { byteArrayToFloatArray(it) }
+        val mergedCentroidBytes = if (centroidA != null && centroidB != null) {
+            val total = clusterA.faceCount + clusterB.faceCount
+            val merged = FloatArray(EMBEDDING_SIZE)
+            for (i in 0 until EMBEDDING_SIZE) {
+                merged[i] = (centroidA[i] * clusterA.faceCount + centroidB[i] * clusterB.faceCount) / (if (total > 0) total else 1)
+            }
+            normalizeVector(merged)
+            floatArrayToByteArray(merged)
+        } else {
+            clusterA.centroid ?: clusterB.centroid
+        }
+
+        val newCount = clusterA.faceCount + clusterB.faceCount
+        val newCover = if (clusterA.coverMediaId != 0L) clusterA.coverMediaId else clusterB.coverMediaId
+
+        db.personClusterDao().updateClusterStats(
+            targetId,
+            newCount,
+            newCover,
+            mergedCentroidBytes
+        )
+        db.personClusterDao().deleteById(sourceId)
     }
 
     // ─── 6. Live "Select-to-Copy" OCR & Offline Barcode/QR Scanner ─────────

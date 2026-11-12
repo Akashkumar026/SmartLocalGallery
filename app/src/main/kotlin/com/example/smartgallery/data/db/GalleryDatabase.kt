@@ -116,8 +116,44 @@ data class PersonCluster(
     val displayName: String,
     val coverMediaId: Long = 0,
     val faceCount: Int = 0,
+    val centroid: ByteArray? = null,
     val createdAt: Long,
     val updatedAt: Long
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PersonCluster) return false
+        return id == other.id &&
+                displayName == other.displayName &&
+                coverMediaId == other.coverMediaId &&
+                faceCount == other.faceCount &&
+                createdAt == other.createdAt &&
+                updatedAt == other.updatedAt &&
+                ((centroid == null && other.centroid == null) || (centroid != null && other.centroid != null && centroid.contentEquals(other.centroid)))
+    }
+
+    override fun hashCode(): Int {
+        var result = id.hashCode()
+        result = 31 * result + displayName.hashCode()
+        result = 31 * result + coverMediaId.hashCode()
+        result = 31 * result + faceCount
+        result = 31 * result + (centroid?.contentHashCode() ?: 0)
+        result = 31 * result + createdAt.hashCode()
+        result = 31 * result + updatedAt.hashCode()
+        return result
+    }
+}
+
+@Immutable
+@Entity(
+    tableName = "person_media_cross_ref",
+    primaryKeys = ["clusterId", "mediaId"],
+    indices = [Index("clusterId"), Index("mediaId")]
+)
+data class PersonMediaCrossRef(
+    val clusterId: Long,
+    val mediaId: Long,
+    val faceScore: Float = 0f
 )
 
 @Immutable
@@ -335,6 +371,9 @@ interface MediaItemDao {
     @Query("SELECT * FROM media_items WHERE xxHash64 IS NULL AND isTrashed = 0")
     suspend fun getUnhashedItemsSync(): List<MediaItem>
 
+    @Query("UPDATE media_items SET faceEmbeddingIds = '[]'")
+    suspend fun clearAllFaceEmbeddingIds()
+
     @Query("DELETE FROM media_items WHERE isTrashed = 1 AND trashedAt < :cutoffTime")
     suspend fun purgeOldTrash(cutoffTime: Long): Int
 }
@@ -355,6 +394,12 @@ interface FaceEmbeddingDao {
 
     @Query("SELECT * FROM face_embeddings WHERE mediaItemId = :mediaId")
     suspend fun getByMediaId(mediaId: Long): List<FaceEmbedding>
+
+    @Query("UPDATE face_embeddings SET personId = :targetPersonId WHERE personId = :sourcePersonId")
+    suspend fun repointPersonId(sourcePersonId: Long, targetPersonId: Long)
+
+    @Query("DELETE FROM face_embeddings")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -368,14 +413,53 @@ interface PersonClusterDao {
     @Query("DELETE FROM person_clusters WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    @Query("DELETE FROM person_clusters")
+    suspend fun deleteAll()
+
     @Query("SELECT * FROM person_clusters ORDER BY faceCount DESC")
     fun getAll(): Flow<List<PersonCluster>>
+
+    @Query("SELECT * FROM person_clusters ORDER BY faceCount DESC")
+    suspend fun getAllSync(): List<PersonCluster>
 
     @Query("SELECT * FROM person_clusters WHERE id = :id")
     suspend fun getById(id: Long): PersonCluster?
 
     @Query("UPDATE person_clusters SET displayName = :name, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateName(id: Long, name: String, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE person_clusters SET faceCount = :faceCount, coverMediaId = :coverMediaId, centroid = :centroid, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateClusterStats(id: Long, faceCount: Int, coverMediaId: Long, centroid: ByteArray?, updatedAt: Long = System.currentTimeMillis())
+}
+
+@Dao
+interface PersonMediaCrossRefDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(ref: PersonMediaCrossRef): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAll(refs: List<PersonMediaCrossRef>): List<Long>
+
+    @Query("SELECT DISTINCT m.* FROM media_items m INNER JOIN person_media_cross_ref ref ON m.id = ref.mediaId WHERE ref.clusterId = :clusterId AND m.isTrashed = 0 ORDER BY m.dateModified DESC")
+    fun getMediaForCluster(clusterId: Long): Flow<List<MediaItem>>
+
+    @Query("SELECT DISTINCT m.* FROM media_items m INNER JOIN person_media_cross_ref ref ON m.id = ref.mediaId WHERE ref.clusterId = :clusterId AND m.isTrashed = 0 ORDER BY m.dateModified DESC")
+    suspend fun getMediaForClusterSync(clusterId: Long): List<MediaItem>
+
+    @Query("INSERT OR IGNORE INTO person_media_cross_ref (clusterId, mediaId, faceScore) SELECT :targetClusterId, mediaId, faceScore FROM person_media_cross_ref WHERE clusterId = :sourceClusterId")
+    suspend fun copyRefsToCluster(sourceClusterId: Long, targetClusterId: Long)
+
+    @Query("DELETE FROM person_media_cross_ref WHERE clusterId = :clusterId")
+    suspend fun deleteForCluster(clusterId: Long)
+
+    @Transaction
+    suspend fun repointCluster(sourceClusterId: Long, targetClusterId: Long) {
+        copyRefsToCluster(sourceClusterId, targetClusterId)
+        deleteForCluster(sourceClusterId)
+    }
+
+    @Query("DELETE FROM person_media_cross_ref")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -505,6 +589,7 @@ interface VaultItemDao {
         MediaItem::class,
         FaceEmbedding::class,
         PersonCluster::class,
+        PersonMediaCrossRef::class,
         PlaybackState::class,
         Bookmark::class,
         DuplicateGroup::class,
@@ -512,13 +597,14 @@ interface VaultItemDao {
         MediaFts::class,
         VaultItemEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class GalleryDatabase : RoomDatabase() {
     abstract fun mediaItemDao(): MediaItemDao
     abstract fun faceEmbeddingDao(): FaceEmbeddingDao
     abstract fun personClusterDao(): PersonClusterDao
+    abstract fun personMediaCrossRefDao(): PersonMediaCrossRefDao
     abstract fun playbackStateDao(): PlaybackStateDao
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun duplicateGroupDao(): DuplicateGroupDao
@@ -563,6 +649,9 @@ object DatabaseModule {
 
     @Provides
     fun providePersonClusterDao(db: GalleryDatabase): PersonClusterDao = db.personClusterDao()
+
+    @Provides
+    fun providePersonMediaCrossRefDao(db: GalleryDatabase): PersonMediaCrossRefDao = db.personMediaCrossRefDao()
 
     @Provides
     fun providePlaybackStateDao(db: GalleryDatabase): PlaybackStateDao = db.playbackStateDao()

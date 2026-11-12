@@ -323,6 +323,39 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun reIndexFaces() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_isFaceScanning.value) return@launch
+            _isFaceScanning.value = true
+            try {
+                db.personMediaCrossRefDao().deleteAll()
+                db.faceEmbeddingDao().deleteAll()
+                db.personClusterDao().deleteAll()
+                db.mediaItemDao().clearAllFaceEmbeddingIds()
+                val threshold = settings.settingsFlow.first().faceClusterThreshold
+                engine.scanFaces(threshold = threshold, forceRescan = true)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error re-indexing faces: ${e.message}", e)
+            } finally {
+                _isFaceScanning.value = false
+            }
+        }
+    }
+
+    fun mergeClusters(clusterA: PersonCluster, clusterB: PersonCluster) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                engine.mergeClustersManually(clusterA, clusterB)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error merging person clusters: ${e.message}", e)
+            }
+        }
+    }
+
+    fun getPhotosForPersonCluster(clusterId: Long): Flow<List<MediaItem>> {
+        return db.personMediaCrossRefDao().getMediaForCluster(clusterId)
+    }
+
     fun scanFacesNow(forceRescan: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             if (_isFaceScanning.value) return@launch

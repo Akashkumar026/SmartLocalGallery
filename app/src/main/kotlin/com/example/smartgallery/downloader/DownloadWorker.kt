@@ -36,6 +36,8 @@ class DownloadWorker @AssistedInject constructor(
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        downloaderEngine.ensureInitialized(appContext)
+
         val taskId = inputData.getLong(KEY_TASK_ID, -1L)
         if (taskId == -1L) return@withContext Result.failure()
 

@@ -45,6 +45,9 @@ class SmartGalleryApp : Application(), Configuration.Provider, SingletonImageLoa
     @Inject
     lateinit var profiler: DeviceCapabilityProfiler
 
+    @Inject
+    lateinit var downloaderEngine: dagger.Lazy<com.example.smartgallery.downloader.MediaDownloaderEngine>
+
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -172,24 +175,10 @@ class SmartGalleryApp : Application(), Configuration.Provider, SingletonImageLoa
     private fun initEmbeddedDownloaderBinaries() {
         applicationScope.launch {
             try {
-                YoutubeDL.getInstance().init(applicationContext)
-                Log.d(TAG, "YoutubeDL engine initialized successfully.")
+                downloaderEngine.get().ensureInitialized(applicationContext)
+                Log.d(TAG, "Embedded downloader engines initialized successfully via MediaDownloaderEngine.")
             } catch (t: Throwable) {
-                Log.e(TAG, "Non-fatal: Failed to initialize YoutubeDL native engine: ${t.message}", t)
-            }
-
-            try {
-                FFmpeg.getInstance().init(applicationContext)
-                Log.d(TAG, "FFmpeg engine initialized successfully.")
-            } catch (t: Throwable) {
-                Log.e(TAG, "Non-fatal: Failed to initialize FFmpeg native engine: ${t.message}", t)
-            }
-
-            try {
-                Aria2c.getInstance().init(applicationContext)
-                Log.d(TAG, "Aria2c engine initialized successfully.")
-            } catch (t: Throwable) {
-                Log.e(TAG, "Non-fatal: Failed to initialize Aria2c native engine: ${t.message}", t)
+                Log.w(TAG, "Background pre-warm of downloader engines notice: ${t.message}")
             }
         }
     }
