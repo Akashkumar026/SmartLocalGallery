@@ -104,7 +104,11 @@ data class AppSettings(
 
     // ─── Privacy, Vault & File Management ──────────────────────────────
     val vaultPinHash: String = "",
+    val vaultPinSalt: String = "",
+    val vaultFailedAttempts: Int = 0,
+    val vaultLockoutUntilMs: Long = 0L,
     val vaultBiometricEnabled: Boolean = false,
+    val lastScanCheckpointId: Long = 0L,
     val trashAutoPurgeDays: Int = 30,
     val stripGpsExifBeforeShare: Boolean = true,
     val photoScannerEnhanceContrast: Float = 1.5f
@@ -178,7 +182,11 @@ object SettingsKeys {
     val COOKIES_TXT_CONTENT = stringPreferencesKey("cookies_txt_content")
 
     val VAULT_PIN_HASH = stringPreferencesKey("vault_pin_hash")
+    val VAULT_PIN_SALT = stringPreferencesKey("vault_pin_salt")
+    val VAULT_FAILED_ATTEMPTS = intPreferencesKey("vault_failed_attempts")
+    val VAULT_LOCKOUT_UNTIL_MS = longPreferencesKey("vault_lockout_until_ms")
     val VAULT_BIOMETRIC_ENABLED = booleanPreferencesKey("vault_biometric_enabled")
+    val LAST_SCAN_CHECKPOINT_ID = longPreferencesKey("last_scan_checkpoint_id")
     val TRASH_AUTO_PURGE_DAYS = intPreferencesKey("trash_auto_purge_days")
     val STRIP_GPS_EXIF_BEFORE_SHARE = booleanPreferencesKey("strip_gps_exif_before_share")
     val PHOTO_SCANNER_ENHANCE_CONTRAST = floatPreferencesKey("photo_scanner_enhance_contrast")
@@ -260,7 +268,11 @@ class SettingsRepository @Inject constructor(
                 downloadCustomDir = prefs[SettingsKeys.DOWNLOAD_CUSTOM_DIR] ?: "",
                 cookiesTxtContent = prefs[SettingsKeys.COOKIES_TXT_CONTENT] ?: "",
                 vaultPinHash = prefs[SettingsKeys.VAULT_PIN_HASH] ?: "",
+                vaultPinSalt = prefs[SettingsKeys.VAULT_PIN_SALT] ?: "",
+                vaultFailedAttempts = prefs[SettingsKeys.VAULT_FAILED_ATTEMPTS] ?: 0,
+                vaultLockoutUntilMs = prefs[SettingsKeys.VAULT_LOCKOUT_UNTIL_MS] ?: 0L,
                 vaultBiometricEnabled = prefs[SettingsKeys.VAULT_BIOMETRIC_ENABLED] ?: false,
+                lastScanCheckpointId = prefs[SettingsKeys.LAST_SCAN_CHECKPOINT_ID] ?: 0L,
                 trashAutoPurgeDays = prefs[SettingsKeys.TRASH_AUTO_PURGE_DAYS] ?: 30,
                 stripGpsExifBeforeShare = prefs[SettingsKeys.STRIP_GPS_EXIF_BEFORE_SHARE] ?: true,
                 photoScannerEnhanceContrast = prefs[SettingsKeys.PHOTO_SCANNER_ENHANCE_CONTRAST] ?: 1.5f
@@ -347,6 +359,58 @@ class SettingsRepository @Inject constructor(
     suspend fun setCookiesTxtContent(content: String) = context.dataStore.edit { it[SettingsKeys.COOKIES_TXT_CONTENT] = content }
 
     // Vault & File Tools
+    fun hashPin(pin: String, salt: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val bytes = md.digest("$salt:$pin".toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    suspend fun setVaultPin(pin: String) = context.dataStore.edit {
+        val salt = java.util.UUID.randomUUID().toString()
+        val hash = hashPin(pin, salt)
+        it[SettingsKeys.VAULT_PIN_SALT] = salt
+        it[SettingsKeys.VAULT_PIN_HASH] = hash
+        it[SettingsKeys.VAULT_FAILED_ATTEMPTS] = 0
+        it[SettingsKeys.VAULT_LOCKOUT_UNTIL_MS] = 0L
+    }
+
+    suspend fun verifyVaultPin(pin: String): Boolean {
+        val prefs = context.dataStore.data.first()
+        val storedHash = prefs[SettingsKeys.VAULT_PIN_HASH] ?: ""
+        val salt = prefs[SettingsKeys.VAULT_PIN_SALT] ?: ""
+        if (storedHash.isBlank()) return false
+
+        val lockoutUntil = prefs[SettingsKeys.VAULT_LOCKOUT_UNTIL_MS] ?: 0L
+        if (System.currentTimeMillis() < lockoutUntil) return false
+
+        val inputHash = hashPin(pin, salt)
+        val matches = (inputHash == storedHash)
+        if (matches) {
+            context.dataStore.edit {
+                it[SettingsKeys.VAULT_FAILED_ATTEMPTS] = 0
+                it[SettingsKeys.VAULT_LOCKOUT_UNTIL_MS] = 0L
+            }
+        } else {
+            context.dataStore.edit {
+                val current = (it[SettingsKeys.VAULT_FAILED_ATTEMPTS] ?: 0) + 1
+                it[SettingsKeys.VAULT_FAILED_ATTEMPTS] = current
+                if (current >= 5) {
+                    it[SettingsKeys.VAULT_LOCKOUT_UNTIL_MS] = System.currentTimeMillis() + 30_000L
+                }
+            }
+        }
+        return matches
+    }
+
+    suspend fun clearVaultLockout() = context.dataStore.edit {
+        it[SettingsKeys.VAULT_FAILED_ATTEMPTS] = 0
+        it[SettingsKeys.VAULT_LOCKOUT_UNTIL_MS] = 0L
+    }
+
+    suspend fun setScanCheckpointId(id: Long) = context.dataStore.edit {
+        it[SettingsKeys.LAST_SCAN_CHECKPOINT_ID] = id
+    }
+
     suspend fun setVaultPinHash(hash: String) = context.dataStore.edit { it[SettingsKeys.VAULT_PIN_HASH] = hash }
     suspend fun setVaultBiometricEnabled(enabled: Boolean) = context.dataStore.edit { it[SettingsKeys.VAULT_BIOMETRIC_ENABLED] = enabled }
     suspend fun setTrashAutoPurgeDays(days: Int) = context.dataStore.edit { it[SettingsKeys.TRASH_AUTO_PURGE_DAYS] = days.coerceIn(1, 90) }
@@ -356,8 +420,14 @@ class SettingsRepository @Inject constructor(
     suspend fun exportSettingsJson(): String {
         val json = JSONObject()
         val prefs = context.dataStore.data.first()
+        val sensitiveKeys = setOf(
+            SettingsKeys.VAULT_PIN_HASH.name,
+            SettingsKeys.VAULT_PIN_SALT.name,
+            SettingsKeys.VAULT_FAILED_ATTEMPTS.name,
+            SettingsKeys.VAULT_LOCKOUT_UNTIL_MS.name
+        )
         prefs.asMap().forEach { (key, value) ->
-            if (key.name != SettingsKeys.VAULT_PIN_HASH.name) {
+            if (key.name !in sensitiveKeys) {
                 json.put(key.name, value)
             }
         }
@@ -366,11 +436,17 @@ class SettingsRepository @Inject constructor(
 
     suspend fun importSettingsJson(jsonStr: String) {
         val json = JSONObject(jsonStr)
+        val sensitiveKeys = setOf(
+            SettingsKeys.VAULT_PIN_HASH.name,
+            SettingsKeys.VAULT_PIN_SALT.name,
+            SettingsKeys.VAULT_FAILED_ATTEMPTS.name,
+            SettingsKeys.VAULT_LOCKOUT_UNTIL_MS.name
+        )
         context.dataStore.edit { prefs ->
             val keys = json.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
-                if (key == SettingsKeys.VAULT_PIN_HASH.name) continue
+                if (key in sensitiveKeys) continue
                 when (val value = json.get(key)) {
                     is Boolean -> prefs[booleanPreferencesKey(key)] = value
                     is Int -> prefs[intPreferencesKey(key)] = value

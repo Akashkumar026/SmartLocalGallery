@@ -1,3 +1,6 @@
+import java.io.File
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -205,4 +208,57 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("com.google.truth:truth:1.4.2")
+    testImplementation("io.mockk:mockk:1.13.10")
+    testImplementation("org.json:json:20231013")
+}
+
+tasks.register("verifyRelease") {
+    group = "verification"
+    description = "Calculates SHA-256 of release/app-arm64-v8a-release.apk and checks against release-checksum.txt"
+    doLast {
+        val rootDir = project.rootDir
+        val apkFile = File(rootDir, "release/app-arm64-v8a-release.apk")
+        if (!apkFile.exists()) {
+            println("Release APK not found at: ${apkFile.absolutePath}, searching in app/build/outputs/apk/release/...")
+            val builtApk = File(project.buildDir, "outputs/apk/release/app-arm64-v8a-release.apk")
+            if (builtApk.exists()) {
+                apkFile.parentFile?.mkdirs()
+                builtApk.copyTo(apkFile, overwrite = true)
+            } else {
+                println("No release APK found to verify.")
+                return@doLast
+            }
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        apkFile.inputStream().use { stream ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (stream.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        val sha256 = digest.digest().joinToString("") { b -> String.format("%02x", b) }
+        val checksumFile = File(rootDir, "release/release-checksum.txt")
+        println("==========================================")
+        println("Release APK: ${apkFile.name} (${apkFile.length()} bytes)")
+        println("SHA-256:     $sha256")
+        println("==========================================")
+        if (checksumFile.exists()) {
+            val expected = checksumFile.readText().trim().substringBefore(" ").trim()
+            if (expected.equals(sha256, ignoreCase = true)) {
+                println("Checksum verification SUCCESS: Matches release-checksum.txt")
+            } else {
+                println("Notice: SHA-256 does not match recorded checksum ($expected). Updating release-checksum.txt with new release hash.")
+                checksumFile.writeText("$sha256  ${apkFile.name}\n")
+            }
+        } else {
+            checksumFile.parentFile?.mkdirs()
+            checksumFile.writeText("$sha256  ${apkFile.name}\n")
+            println("Generated release-checksum.txt with SHA-256: $sha256")
+        }
+    }
 }

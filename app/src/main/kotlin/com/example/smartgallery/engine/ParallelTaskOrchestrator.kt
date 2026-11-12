@@ -16,6 +16,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Immutable
+data class PipelineError(
+    val itemName: String,
+    val reason: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+@Immutable
 data class PipelineProgress(
     val title: String,
     val progress: Float = 0f,
@@ -24,7 +31,9 @@ data class PipelineProgress(
     val isRunning: Boolean = false,
     val isPaused: Boolean = false,
     val itemsPerSec: Float = 0f,
-    val statusText: String = "Idle"
+    val statusText: String = "Idle",
+    val errorCount: Int = 0,
+    val errors: List<PipelineError> = emptyList()
 )
 
 @Immutable
@@ -96,12 +105,15 @@ class ParallelTaskOrchestrator @Inject constructor(
                 // 1. Compute xxHash for unhashed items
                 val unhashed = db.mediaItemDao().getUnhashedItemsSync()
                 val total = unhashed.size.coerceAtLeast(1)
+                val errors = mutableListOf<PipelineError>()
                 _state.update {
                     it.copy(
                         duplicates = it.duplicates.copy(
                             totalCount = total,
                             processedCount = 0,
-                            progress = 0f
+                            progress = 0f,
+                            errorCount = 0,
+                            errors = emptyList()
                         )
                     )
                 }
@@ -110,7 +122,11 @@ class ParallelTaskOrchestrator @Inject constructor(
                     while (pauseDuplicates) delay(500)
                     throttleIfActive()
 
-                    engine.hashItem(item)
+                    try {
+                        engine.hashItem(item)
+                    } catch (itemErr: Exception) {
+                        errors.add(PipelineError(item.displayName, itemErr.message ?: "Hash calculation failure"))
+                    }
                     processed++
 
                     if (processed % 5 == 0) {
@@ -123,7 +139,9 @@ class ParallelTaskOrchestrator @Inject constructor(
                                     processedCount = processed,
                                     progress = (processed.toFloat() / total.toFloat()).coerceIn(0f, 0.7f),
                                     itemsPerSec = rate,
-                                    statusText = "Hashing: $processed / $total"
+                                    statusText = "Hashing: $processed / $total",
+                                    errorCount = errors.size,
+                                    errors = errors.toList()
                                 )
                             )
                         }
@@ -169,7 +187,9 @@ class ParallelTaskOrchestrator @Inject constructor(
                             isRunning = false,
                             isPaused = false,
                             progress = 1.0f,
-                            statusText = "Completed"
+                            statusText = if (errors.isEmpty()) "Completed" else "Done with ${errors.size} errors",
+                            errorCount = errors.size,
+                            errors = errors.toList()
                         )
                     )
                 }
@@ -211,50 +231,74 @@ class ParallelTaskOrchestrator @Inject constructor(
                     categorizer = it.categorizer.copy(
                         isRunning = true,
                         isPaused = false,
-                        statusText = "Classifying images..."
+                        statusText = "Classifying images...",
+                        errorCount = 0,
+                        errors = emptyList()
                     )
                 )
             }
             updateAnyRunning()
 
             val startTime = System.currentTimeMillis()
+            val errors = mutableListOf<PipelineError>()
             try {
-                val images = db.mediaItemDao().getAllSync().filter { it.mediaType == "IMAGE" }
-                val total = images.size.coerceAtLeast(1)
+                val checkpointId = settings.settingsFlow.first().lastScanCheckpointId
+                val allImages = db.mediaItemDao().getAllSync().filter { it.mediaType == "IMAGE" && !it.isUserOverridden }
+                val startIdx = if (checkpointId > 0) {
+                    val idx = allImages.indexOfFirst { it.id == checkpointId }
+                    if (idx >= 0) idx else 0
+                } else 0
+
+                val images = allImages.drop(startIdx)
+                val total = allImages.size.coerceAtLeast(1)
+
                 _state.update {
                     it.copy(
                         categorizer = it.categorizer.copy(
                             totalCount = total,
-                            processedCount = 0,
-                            progress = 0f
+                            processedCount = startIdx,
+                            progress = (startIdx.toFloat() / total.toFloat()).coerceIn(0f, 1f)
                         )
                     )
                 }
 
-                var processed = 0
+                var processed = startIdx
                 for (item in images) {
                     while (pauseCategorizer) delay(500)
                     throttleIfActive()
 
-                    engine.analyzeImageWithAllSignals(item)
+                    try {
+                        engine.analyzeImageWithAllSignals(item)
+                    } catch (itemErr: Exception) {
+                        errors.add(PipelineError(item.displayName, itemErr.message ?: "Classification failure"))
+                    }
                     processed++
+
+                    if (processed % 10 == 0) {
+                        settings.setScanCheckpointId(item.id)
+                    }
 
                     if (processed % 5 == 0) {
                         yield()
                         val elapsedSecs = ((System.currentTimeMillis() - startTime) / 1000f).coerceAtLeast(0.1f)
-                        val rate = processed / elapsedSecs
+                        val rate = (processed - startIdx) / elapsedSecs
                         _state.update {
                             it.copy(
                                 categorizer = it.categorizer.copy(
                                     processedCount = processed,
                                     progress = (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f),
                                     itemsPerSec = rate,
-                                    statusText = "Categorizing: $processed / $total"
+                                    statusText = "Categorizing: $processed / $total",
+                                    errorCount = errors.size,
+                                    errors = errors.toList()
                                 )
                             )
                         }
                     }
                 }
+
+                // Finished all items cleanly; clear checkpoint
+                settings.setScanCheckpointId(0L)
 
                 _state.update {
                     it.copy(
@@ -262,7 +306,9 @@ class ParallelTaskOrchestrator @Inject constructor(
                             isRunning = false,
                             isPaused = false,
                             progress = 1.0f,
-                            statusText = "Completed"
+                            statusText = if (errors.isEmpty()) "Completed" else "Done with ${errors.size} errors",
+                            errorCount = errors.size,
+                            errors = errors.toList()
                         )
                     )
                 }
@@ -417,5 +463,15 @@ class ParallelTaskOrchestrator @Inject constructor(
         cancelDuplicates()
         cancelCategorizer()
         cancelFaces()
+    }
+
+    fun clearErrors() {
+        _state.update {
+            it.copy(
+                duplicates = it.duplicates.copy(errorCount = 0, errors = emptyList()),
+                categorizer = it.categorizer.copy(errorCount = 0, errors = emptyList()),
+                faces = it.faces.copy(errorCount = 0, errors = emptyList())
+            )
+        }
     }
 }

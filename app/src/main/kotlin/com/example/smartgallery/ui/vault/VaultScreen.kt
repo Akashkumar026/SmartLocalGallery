@@ -1,12 +1,10 @@
 package com.example.smartgallery.ui.vault
 
-import android.app.Activity
+import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.os.CountDownTimer
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
@@ -53,11 +51,12 @@ import com.example.smartgallery.data.settings.SettingsRepository
 import com.example.smartgallery.vault.VaultAndFileManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
@@ -80,13 +79,37 @@ class VaultViewModel @Inject constructor(
     )
 
     var isUnlocked by mutableStateOf(false)
-    var failedAttempts by mutableStateOf(0)
-    var lockoutSecondsRemaining by mutableStateOf(0)
     var pinInput by mutableStateOf("")
 
     fun lock() {
         isUnlocked = false
         pinInput = ""
+    }
+
+    fun setPin(pin: String) {
+        viewModelScope.launch {
+            settings.setVaultPin(pin)
+            isUnlocked = true
+            pinInput = ""
+        }
+    }
+
+    fun verifyPin(pin: String, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val valid = settings.verifyVaultPin(pin)
+            if (valid) {
+                isUnlocked = true
+                pinInput = ""
+            }
+            onResult(valid)
+        }
+    }
+
+    fun unlockViaBiometric() {
+        viewModelScope.launch {
+            settings.clearVaultLockout()
+            isUnlocked = true
+        }
     }
 
     fun restoreItem(item: VaultItemEntity, onComplete: () -> Unit) {
@@ -101,11 +124,15 @@ class VaultViewModel @Inject constructor(
     fun permanentlyDeleteItem(item: VaultItemEntity) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                java.io.File(item.vaultFilePath).delete()
-                item.thumbnailFilePath?.let { java.io.File(it).delete() }
+                File(item.vaultFilePath).delete()
+                item.thumbnailFilePath?.let { File(it).delete() }
                 db.vaultItemDao().deleteById(item.id)
             } catch (_: Exception) {}
         }
+    }
+
+    suspend fun loadBitmap(item: VaultItemEntity, isThumb: Boolean = false): Bitmap? {
+        return vaultManager.loadDecryptedBitmap(item, isThumb = isThumb)
     }
 
     suspend fun loadBytes(item: VaultItemEntity, isThumb: Boolean = true): ByteArray? {
@@ -125,7 +152,6 @@ fun VaultScreen(
     val vaultItems by viewModel.vaultItems.collectAsState()
 
     var activeViewerItem by remember { mutableStateOf<VaultItemEntity?>(null) }
-    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
 
     // Lock on pause/backgrounding
     DisposableEffect(lifecycleOwner) {
@@ -141,9 +167,26 @@ fun VaultScreen(
         }
     }
 
-    // Auto-launch biometric prompt when unlocked is false and biometric enabled
-    LaunchedEffect(viewModel.isUnlocked) {
-        if (!viewModel.isUnlocked && appSettings.vaultBiometricEnabled && viewModel.lockoutSecondsRemaining == 0) {
+    // Lockout countdown timer
+    var lockoutRemainingSeconds by remember { mutableStateOf(0) }
+    LaunchedEffect(appSettings.vaultLockoutUntilMs) {
+        while (true) {
+            val now = System.currentTimeMillis()
+            val remaining = ((appSettings.vaultLockoutUntilMs - now) / 1000).toInt()
+            if (remaining > 0) {
+                lockoutRemainingSeconds = remaining
+                delay(1000)
+            } else {
+                lockoutRemainingSeconds = 0
+                break
+            }
+        }
+    }
+
+    // Auto-launch biometric prompt when locked and biometric is enabled and not locked out
+    val hasPinConfigured = appSettings.vaultPinHash.isNotBlank()
+    LaunchedEffect(viewModel.isUnlocked, hasPinConfigured, lockoutRemainingSeconds) {
+        if (!viewModel.isUnlocked && hasPinConfigured && appSettings.vaultBiometricEnabled && lockoutRemainingSeconds == 0) {
             val activity = context as? FragmentActivity
             if (activity != null) {
                 val executor = ContextCompat.getMainExecutor(context)
@@ -151,12 +194,7 @@ fun VaultScreen(
                     object : BiometricPrompt.AuthenticationCallback() {
                         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                             super.onAuthenticationSucceeded(result)
-                            viewModel.isUnlocked = true
-                            viewModel.failedAttempts = 0
-                        }
-
-                        override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                            super.onAuthenticationError(errorCode, errString)
+                            viewModel.unlockViaBiometric()
                         }
                     })
 
@@ -172,7 +210,6 @@ fun VaultScreen(
     }
 
     if (!viewModel.isUnlocked) {
-        // Vault Lock Screen (PIN & Biometric)
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -191,138 +228,60 @@ fun VaultScreen(
                     .padding(padding),
                 contentAlignment = Alignment.Center
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .fillMaxWidth(0.85f)
-                        .padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.size(80.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Default.Lock,
-                                contentDescription = null,
-                                modifier = Modifier.size(40.dp),
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
+                if (!hasPinConfigured) {
+                    // PIN Setup Flow
+                    VaultSetupPinCard(
+                        onSetPin = { newPin ->
+                            viewModel.setPin(newPin)
+                            Toast.makeText(context, "Vault PIN created successfully", Toast.LENGTH_SHORT).show()
                         }
-                    }
-
-                    Text(
-                        "Vault is Locked",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
                     )
-
-                    Text(
-                        "Enter PIN or authenticate via Biometrics to access AES-256 encrypted storage",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    if (viewModel.lockoutSecondsRemaining > 0) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                "Too many failed attempts. Locked for ${viewModel.lockoutSecondsRemaining}s",
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.padding(12.dp),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    } else {
-                        OutlinedTextField(
-                            value = viewModel.pinInput,
-                            onValueChange = { input ->
-                                if (input.length <= 8) {
-                                    viewModel.pinInput = input
-                                    // Verify PIN automatically
-                                    val targetHash = appSettings.vaultPinHash
-                                    if (targetHash.isBlank() || input == targetHash || input == "1234") {
-                                        viewModel.isUnlocked = true
-                                        viewModel.failedAttempts = 0
-                                    }
-                                }
-                            },
-                            label = { Text("Vault PIN") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Button(
-                                onClick = {
-                                    val targetHash = appSettings.vaultPinHash
-                                    if (targetHash.isBlank() || viewModel.pinInput == targetHash || viewModel.pinInput == "1234") {
-                                        viewModel.isUnlocked = true
-                                        viewModel.failedAttempts = 0
+                } else {
+                    // PIN Verification Flow
+                    VaultUnlockCard(
+                        pinInput = viewModel.pinInput,
+                        onPinChange = { viewModel.pinInput = it },
+                        lockoutSeconds = lockoutRemainingSeconds,
+                        failedAttempts = appSettings.vaultFailedAttempts,
+                        biometricEnabled = appSettings.vaultBiometricEnabled,
+                        onUnlock = {
+                            viewModel.verifyPin(viewModel.pinInput) { success ->
+                                if (!success) {
+                                    val attemptsLeft = (5 - (appSettings.vaultFailedAttempts + 1)).coerceAtLeast(0)
+                                    val msg = if (attemptsLeft > 0) {
+                                        "Incorrect PIN ($attemptsLeft attempts remaining)"
                                     } else {
-                                        viewModel.failedAttempts++
-                                        Toast.makeText(context, "Incorrect PIN", Toast.LENGTH_SHORT).show()
-                                        if (viewModel.failedAttempts >= 5) {
-                                            viewModel.lockoutSecondsRemaining = 30
-                                            object : CountDownTimer(30000, 1000) {
-                                                override fun onTick(millisUntilFinished: Long) {
-                                                    viewModel.lockoutSecondsRemaining = (millisUntilFinished / 1000).toInt()
-                                                }
-                                                override fun onFinish() {
-                                                    viewModel.lockoutSecondsRemaining = 0
-                                                    viewModel.failedAttempts = 0
-                                                }
-                                            }.start()
-                                        }
+                                        "Too many failed attempts. Vault locked."
                                     }
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Unlock")
-                            }
-
-                            if (appSettings.vaultBiometricEnabled) {
-                                OutlinedButton(
-                                    onClick = {
-                                        val activity = context as? FragmentActivity ?: return@OutlinedButton
-                                        val executor = ContextCompat.getMainExecutor(context)
-                                        val prompt = BiometricPrompt(activity, executor,
-                                            object : BiometricPrompt.AuthenticationCallback() {
-                                                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                                                    super.onAuthenticationSucceeded(result)
-                                                    viewModel.isUnlocked = true
-                                                    viewModel.failedAttempts = 0
-                                                }
-                                            })
-                                        prompt.authenticate(
-                                            BiometricPrompt.PromptInfo.Builder()
-                                                .setTitle("Unlock Private Vault")
-                                                .setNegativeButtonText("Cancel")
-                                                .build()
-                                        )
-                                    }
-                                ) {
-                                    Icon(Icons.Default.Fingerprint, contentDescription = "Biometric")
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                 }
                             }
+                        },
+                        onBiometricClick = {
+                            val activity = context as? FragmentActivity ?: return@VaultUnlockCard
+                            val executor = ContextCompat.getMainExecutor(context)
+                            val prompt = BiometricPrompt(activity, executor,
+                                object : BiometricPrompt.AuthenticationCallback() {
+                                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                                        super.onAuthenticationSucceeded(result)
+                                        viewModel.unlockViaBiometric()
+                                    }
+                                })
+                            prompt.authenticate(
+                                BiometricPrompt.PromptInfo.Builder()
+                                    .setTitle("Unlock Private Vault")
+                                    .setNegativeButtonText("Cancel")
+                                    .build()
+                            )
                         }
-                    }
+                    )
                 }
             }
         }
         return
     }
 
-    // Unlocked Vault Screen
+    // ─── Unlocked Vault Screen ────────────────────────────────────────────────
     Scaffold(
         topBar = {
             TopAppBar(
@@ -411,7 +370,12 @@ fun VaultScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(item.originalDisplayName, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f))
+                            Text(
+                                item.originalDisplayName,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f)
+                            )
                             IconButton(onClick = { activeViewerItem = null }) {
                                 Icon(Icons.Default.Close, contentDescription = "Close")
                             }
@@ -419,29 +383,75 @@ fun VaultScreen(
 
                         Spacer(Modifier.height(8.dp))
 
-                        val fullBitmap by produceState<Bitmap?>(initialValue = null, key1 = item.id) {
-                            val bytes = viewModel.loadBytes(item, isThumb = false)
-                            value = if (bytes != null) BitmapFactory.decodeByteArray(bytes, 0, bytes.size) else null
-                        }
+                        val isVideo = item.originalMediaType.equals("VIDEO", ignoreCase = true)
 
-                        if (fullBitmap != null) {
-                            Image(
-                                bitmap = fullBitmap!!.asImageBitmap(),
-                                contentDescription = null,
+                        if (isVideo) {
+                            // Video Vault Item Preview & Direct Streaming Launch
+                            Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 400.dp)
-                                    .clip(RoundedCornerShape(8.dp)),
-                                contentScale = ContentScale.Fit
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(200.dp),
-                                contentAlignment = Alignment.Center
+                                    .height(220.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                             ) {
-                                CircularProgressIndicator()
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            Icons.Default.PlayCircle,
+                                            contentDescription = "Play Video",
+                                            modifier = Modifier.size(56.dp),
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(
+                                            "Encrypted Video Stream",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            "Streams on-the-fly via AES-256 CipherDataSource",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(Modifier.height(12.dp))
+                                        Button(
+                                            onClick = {
+                                                val vaultUri = "vault://${item.uuid}"
+                                                activeViewerItem = null
+                                                navController.navigate("video_player?uri=${Uri.encode(vaultUri)}&title=${Uri.encode(item.originalDisplayName)}")
+                                            }
+                                        ) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("Play in Cinema Player")
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Image Preview
+                            val fullBitmap by produceState<Bitmap?>(initialValue = null, key1 = item.id) {
+                                value = viewModel.loadBitmap(item, isThumb = false)
+                            }
+
+                            if (fullBitmap != null) {
+                                Image(
+                                    bitmap = fullBitmap!!.asImageBitmap(),
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 400.dp)
+                                        .clip(RoundedCornerShape(8.dp)),
+                                    contentScale = ContentScale.Fit
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(200.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator()
+                                }
                             }
                         }
 
@@ -486,6 +496,194 @@ fun VaultScreen(
 }
 
 @Composable
+fun VaultSetupPinCard(onSetPin: (String) -> Unit) {
+    var pin by remember { mutableStateOf("") }
+    var confirmPin by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth(0.88f)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.size(80.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.Security,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+
+        Text(
+            "Setup Vault PIN",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            "Create a 4 to 8 digit Master PIN. Your media is hardware-encrypted using AES-256-GCM keys.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        OutlinedTextField(
+            value = pin,
+            onValueChange = {
+                if (it.length <= 8 && it.all { c -> c.isDigit() }) {
+                    pin = it
+                    errorMessage = null
+                }
+            },
+            label = { Text("New PIN (4-8 digits)") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = confirmPin,
+            onValueChange = {
+                if (it.length <= 8 && it.all { c -> c.isDigit() }) {
+                    confirmPin = it
+                    errorMessage = null
+                }
+            },
+            label = { Text("Confirm PIN") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        if (errorMessage != null) {
+            Text(
+                errorMessage!!,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        Button(
+            onClick = {
+                if (pin.length < 4) {
+                    errorMessage = "PIN must be at least 4 digits"
+                } else if (pin != confirmPin) {
+                    errorMessage = "PINs do not match"
+                } else {
+                    onSetPin(pin)
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Create PIN & Enter Vault")
+        }
+    }
+}
+
+@Composable
+fun VaultUnlockCard(
+    pinInput: String,
+    onPinChange: (String) -> Unit,
+    lockoutSeconds: Int,
+    failedAttempts: Int,
+    biometricEnabled: Boolean,
+    onUnlock: () -> Unit,
+    onBiometricClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth(0.85f)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.size(80.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+
+        Text(
+            "Vault is Locked",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            "Enter PIN or authenticate via Biometrics to access AES-256 encrypted storage",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (lockoutSeconds > 0) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    "Too many failed attempts. Locked for ${lockoutSeconds}s",
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        } else {
+            OutlinedTextField(
+                value = pinInput,
+                onValueChange = { input ->
+                    if (input.length <= 8 && input.all { it.isDigit() }) {
+                        onPinChange(input)
+                    }
+                },
+                label = { Text("Vault PIN") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Button(
+                    onClick = onUnlock,
+                    modifier = Modifier.weight(1f),
+                    enabled = pinInput.length >= 4
+                ) {
+                    Text("Unlock")
+                }
+
+                if (biometricEnabled) {
+                    OutlinedButton(onClick = onBiometricClick) {
+                        Icon(Icons.Default.Fingerprint, contentDescription = "Biometric")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun VaultGridItem(
     item: VaultItemEntity,
     viewModel: VaultViewModel,
@@ -496,8 +694,7 @@ fun VaultGridItem(
     var showMenu by remember { mutableStateOf(false) }
 
     val thumbBitmap by produceState<Bitmap?>(initialValue = null, key1 = item.id) {
-        val bytes = viewModel.loadBytes(item, isThumb = true)
-        value = if (bytes != null) BitmapFactory.decodeByteArray(bytes, 0, bytes.size) else null
+        value = viewModel.loadBitmap(item, isThumb = true)
     }
 
     Box(
@@ -521,6 +718,36 @@ fun VaultGridItem(
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+
+        // Video overlay badge
+        if (item.originalMediaType.equals("VIDEO", true)) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(4.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(6.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                ) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text(
+                        "VIDEO",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
@@ -552,4 +779,3 @@ fun VaultGridItem(
         }
     }
 }
-

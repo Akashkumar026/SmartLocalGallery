@@ -336,6 +336,8 @@ fun SmartVideoPlayerScreen(
     val codecInfo by viewModel.codecInfo.collectAsStateWithLifecycle()
     val isInPip by viewModel.isInPip.collectAsStateWithLifecycle()
     val gifMakerState by viewModel.gifMakerState.collectAsStateWithLifecycle()
+    val useVlcFallback by viewModel.useVlcFallback.collectAsStateWithLifecycle()
+    val currentUri by viewModel.currentUri.collectAsStateWithLifecycle()
 
     // Subtitle & Audio state
     val currentSubtitleText by subtitleController.currentSubtitleText.collectAsStateWithLifecycle()
@@ -566,13 +568,61 @@ fun SmartVideoPlayerScreen(
                     translationY = panOffsetY
                 }
         ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        this.player = exoPlayer
-                        useController = false
-                        resizeMode = when (aspectRatioMode) {
+            if (useVlcFallback && currentUri != null) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        val vlcLayout = org.videolan.libvlc.util.VLCVideoLayout(ctx)
+                        val args = arrayListOf("-vvv")
+                        val libVlc = org.videolan.libvlc.LibVLC(ctx, args)
+                        val vlcPlayer = org.videolan.libvlc.MediaPlayer(libVlc)
+                        vlcPlayer.attachViews(vlcLayout, null, false, false)
+                        val media = org.videolan.libvlc.Media(libVlc, currentUri!!)
+                        vlcPlayer.media = media
+                        media.release()
+                        vlcPlayer.play()
+                        vlcLayout.tag = Pair(libVlc, vlcPlayer)
+                        vlcLayout
+                    },
+                    update = { _ -> },
+                    onRelease = { view ->
+                        val pair = view.tag as? Pair<*, *>
+                        (pair?.second as? org.videolan.libvlc.MediaPlayer)?.let { vlcPlayer ->
+                            runCatching {
+                                vlcPlayer.stop()
+                                vlcPlayer.detachViews()
+                                vlcPlayer.release()
+                            }
+                        }
+                        (pair?.first as? org.videolan.libvlc.LibVLC)?.let { libVlc ->
+                            runCatching { libVlc.release() }
+                        }
+                    }
+                )
+            } else {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            this.player = exoPlayer
+                            useController = false
+                            resizeMode = when (aspectRatioMode) {
+                                "FIT" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                "FILL" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                "STRETCH" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                "16_9" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                "4_3" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                "21_9" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                "CENTER_CROP" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            }
+                        }
+                    },
+                    update = { playerView ->
+                        if (playerView.player !== exoPlayer) {
+                            playerView.player = exoPlayer
+                        }
+                        playerView.resizeMode = when (aspectRatioMode) {
                             "FIT" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                             "FILL" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                             "STRETCH" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
@@ -583,23 +633,8 @@ fun SmartVideoPlayerScreen(
                             else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                         }
                     }
-                },
-                update = { playerView ->
-                    if (playerView.player !== exoPlayer) {
-                        playerView.player = exoPlayer
-                    }
-                    playerView.resizeMode = when (aspectRatioMode) {
-                        "FIT" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        "FILL" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        "STRETCH" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                        "16_9" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                        "4_3" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                        "21_9" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                        "CENTER_CROP" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    }
-                }
-            )
+                )
+            }
 
             // Video Color Filter Overlay (simulate brightness, contrast, saturation)
             if (colorFilters.brightness != 0f || colorFilters.contrast != 1f || colorFilters.saturation != 1f) {
@@ -730,7 +765,7 @@ fun SmartVideoPlayerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(screenLocked) {
+                    .pointerInput(screenLocked, containerSize, configuration.orientation) {
                         val touchSlop = viewConfiguration.touchSlop
                         var lastTapTime = 0L
                         var lastTapPos = Offset.Zero
@@ -740,8 +775,8 @@ fun SmartVideoPlayerScreen(
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val downTime = System.currentTimeMillis()
                             val startPos = down.position
-                            val screenWidth = size.width.toFloat()
-                            val screenHeight = size.height.toFloat()
+                            val screenWidth = if (containerSize.width > 0) containerSize.width.toFloat() else size.width.toFloat()
+                            val screenHeight = if (containerSize.height > 0) containerSize.height.toFloat() else size.height.toFloat()
 
                             var isMultiTouch = false
                             var isDrag = false
@@ -933,7 +968,9 @@ fun SmartVideoPlayerScreen(
                                     lastTapPos = startPos
                                     singleTapJob = scope.launch {
                                         delay(300L)
-                                        viewModel.toggleControls()
+                                        if (!showControls) {
+                                            viewModel.showControlsTemporarily(3500L)
+                                        }
                                     }
                                 }
                             }
@@ -1237,10 +1274,10 @@ fun SmartVideoPlayerScreen(
                             )
                         )
                     )
-                    .pointerInput(Unit) {
+                    .pointerInput(containerSize, configuration.orientation) {
                         detectTapGestures(
                             onTap = {
-                                viewModel.toggleControls()
+                                viewModel.hideControls()
                             }
                         )
                     }

@@ -111,12 +111,13 @@ class DownloadWorker @AssistedInject constructor(
             Result.success()
         } catch (e: Exception) {
             e.printStackTrace()
-            val errorMsg = e.message ?: "Unknown error"
+            val typedError = DownloadError.fromThrowable(e)
+            val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"
             db.downloadTaskDao().updateStatus(taskId, "FAILED", null, errorMsg)
-            if (errorMsg.contains("Low Storage Space", ignoreCase = true)) {
-                showFailureNotification("Low Storage Space", errorMsg, notifId)
+            if (typedError is DownloadError.StorageFull) {
+                showFailureNotification("Low Storage Space", typedError.message, notifId)
             } else {
-                showFailureNotification(task.title, errorMsg, notifId)
+                showFailureNotification(task.title, typedError.message, notifId)
             }
             Result.failure()
         }

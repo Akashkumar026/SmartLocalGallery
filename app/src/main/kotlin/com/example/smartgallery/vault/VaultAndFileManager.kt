@@ -17,7 +17,7 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.exifinterface.media.ExifInterface
 import androidx.security.crypto.EncryptedFile
-import androidx.security.crypto.MasterKeys
+import androidx.security.crypto.MasterKey
 import com.example.smartgallery.data.db.GalleryDatabase
 import com.example.smartgallery.data.db.MediaItem
 import com.example.smartgallery.data.db.VaultItemEntity
@@ -50,8 +50,36 @@ class VaultAndFileManager @Inject constructor(
         dir
     }
 
-    private val masterKeyAlias by lazy {
-        MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+    val masterKey: MasterKey by lazy {
+        try {
+            MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .setRequestStrongBoxBacked(true)
+                .build()
+        } catch (_: Exception) {
+            MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+        }
+    }
+
+    fun getEncryptedFile(file: File): EncryptedFile {
+        return EncryptedFile.Builder(
+            context,
+            file,
+            masterKey,
+            EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
+        ).build()
+    }
+
+    private fun computeSha256(stream: java.io.InputStream): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(8192)
+        var bytesRead: Int
+        while (stream.read(buffer).also { bytesRead = it } != -1) {
+            digest.update(buffer, 0, bytesRead)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     data class VaultStagedEncryption(
@@ -67,12 +95,7 @@ class VaultAndFileManager @Inject constructor(
         val uuid = UUID.randomUUID().toString()
         val vaultFile = File(vaultDir, "$uuid.vault")
 
-        val encryptedVault = EncryptedFile.Builder(
-            vaultFile,
-            context,
-            masterKeyAlias,
-            EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-        ).build()
+        val encryptedVault = getEncryptedFile(vaultFile)
 
         val inputStream = try {
             context.contentResolver.openInputStream(mediaItem.contentUri)
@@ -81,28 +104,41 @@ class VaultAndFileManager @Inject constructor(
             if (f.exists()) FileInputStream(f) else null
         } ?: throw IllegalStateException("Cannot open input stream for ${mediaItem.displayName}")
 
+        // 1. Stream source into encrypted file and compute source SHA-256
+        val sourceDigest = java.security.MessageDigest.getInstance("SHA-256")
         inputStream.use { input ->
             encryptedVault.openFileOutput().use { output ->
-                input.copyTo(output)
+                val buffer = ByteArray(8192)
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) {
+                    sourceDigest.update(buffer, 0, read)
+                    output.write(buffer, 0, read)
+                }
             }
         }
+        val sourceHash = sourceDigest.digest().joinToString("") { "%02x".format(it) }
 
         if (!vaultFile.exists() || vaultFile.length() <= 0L) {
             throw IllegalStateException("Encrypted vault write failed: empty or missing file")
         }
 
-        // Generate encrypted thumbnail for instant memory-safe grid preview
+        // 2. Pre-delete Verification: Stream back decrypted bytes and verify SHA-256 matches source
+        val decryptedHash = encryptedVault.openFileInput().use { verifyStream ->
+            computeSha256(verifyStream)
+        }
+
+        if (sourceHash != decryptedHash) {
+            vaultFile.delete()
+            throw SecurityException("Vault integrity verification failed: Decrypted digest mismatch. Aborting public file deletion to prevent data loss.")
+        }
+
+        // 3. Generate encrypted thumbnail for instant memory-safe grid preview
         var thumbFile: File? = null
         try {
             val thumbBitmap = generateThumbnailBitmap(mediaItem)
             if (thumbBitmap != null) {
                 val tFile = File(vaultDir, "$uuid.thumb")
-                val encThumb = EncryptedFile.Builder(
-                    tFile,
-                    context,
-                    masterKeyAlias,
-                    EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-                ).build()
+                val encThumb = getEncryptedFile(tFile)
 
                 encThumb.openFileOutput().use { outStream ->
                     thumbBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outStream)
@@ -174,20 +210,105 @@ class VaultAndFileManager @Inject constructor(
 
         if (!targetFile.exists()) return@withContext null
 
-        try {
-            val encFile = EncryptedFile.Builder(
-                targetFile,
-                context,
-                masterKeyAlias,
-                EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-            ).build()
+        // Cap in-memory allocation at 30MB to avoid OOM
+        if (!isThumb && targetFile.length() > 30 * 1024 * 1024L) {
+            Log.w(TAG, "File too large for heap byte allocation (${targetFile.length()} bytes). Use loadDecryptedBitmap or streaming.")
+            return@withContext null
+        }
 
+        try {
+            val encFile = getEncryptedFile(targetFile)
             encFile.openFileInput().use { input ->
                 input.readBytes()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Decryption error on ${targetFile.name}: ${e.message}")
             null
+        }
+    }
+
+    /**
+     * Safely decodes decrypted image bitmap with inSampleSize to prevent OOM.
+     */
+    suspend fun loadDecryptedBitmap(
+        vaultItem: VaultItemEntity,
+        reqWidth: Int = 1920,
+        reqHeight: Int = 1080,
+        isThumb: Boolean = false
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        val targetFile = if (isThumb && !vaultItem.thumbnailFilePath.isNullOrBlank()) {
+            File(vaultItem.thumbnailFilePath)
+        } else {
+            File(vaultItem.vaultFilePath)
+        }
+        if (!targetFile.exists()) return@withContext null
+
+        try {
+            val encFile = getEncryptedFile(targetFile)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            encFile.openFileInput().use { inStream ->
+                BitmapFactory.decodeStream(inStream, null, bounds)
+            }
+
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
+
+            val sampleSize = calculateInSampleSize(bounds, reqWidth, reqHeight)
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+
+            encFile.openFileInput().use { inStream ->
+                BitmapFactory.decodeStream(inStream, null, decodeOptions)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error decoding decrypted bitmap: ${e.message}")
+            null
+        }
+    }
+
+    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val (height: Int, width: Int) = options.outHeight to options.outWidth
+        var inSampleSize = 1
+        if (height > reqHeight || width > reqWidth) {
+            val halfHeight: Int = height / 2
+            val halfWidth: Int = width / 2
+            while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize.coerceAtLeast(1)
+    }
+
+    /**
+     * Provides an unencrypted stream for audio/video playback or export without saving to disk.
+     */
+    fun openDecryptedInputStream(vaultItem: VaultItemEntity, isThumb: Boolean = false): java.io.InputStream? {
+        val targetFile = if (isThumb && !vaultItem.thumbnailFilePath.isNullOrBlank()) {
+            File(vaultItem.thumbnailFilePath)
+        } else {
+            File(vaultItem.vaultFilePath)
+        }
+        if (!targetFile.exists()) return null
+        return try {
+            getEncryptedFile(targetFile).openFileInput()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * ExoPlayer DataSource factory that streams encrypted vault media directly from storage.
+     */
+    @androidx.media3.common.util.UnstableApi
+    fun getEncryptedDataSourceFactory(): androidx.media3.datasource.DataSource.Factory {
+        return EncryptedFileDataSourceFactory(context, masterKey) { uri ->
+            if (uri.scheme == "vault") {
+                val uuid = uri.host ?: uri.path?.removePrefix("/") ?: ""
+                File(vaultDir, "$uuid.vault")
+            } else {
+                uri.path?.let { File(it) }
+            }
         }
     }
 
@@ -226,12 +347,7 @@ class VaultAndFileManager @Inject constructor(
         val targetUri = context.contentResolver.insert(collectionUri, values) ?: return@withContext false
 
         try {
-            val encFile = EncryptedFile.Builder(
-                vaultFile,
-                context,
-                masterKeyAlias,
-                EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-            ).build()
+            val encFile = getEncryptedFile(vaultFile)
 
             context.contentResolver.openOutputStream(targetUri)?.use { outStream ->
                 encFile.openFileInput().use { inStream ->
@@ -327,12 +443,7 @@ class VaultAndFileManager @Inject constructor(
         val cleanName = vaultFile.name.removePrefix("enc_").removeSuffix(".aes")
         val restoredFile = File(destDir, cleanName)
 
-        val encryptedFile = EncryptedFile.Builder(
-            vaultFile,
-            context,
-            masterKeyAlias,
-            EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-        ).build()
+        val encryptedFile = getEncryptedFile(vaultFile)
 
         encryptedFile.openFileInput().use { input ->
             FileOutputStream(restoredFile).use { output ->
@@ -397,8 +508,8 @@ class VaultAndFileManager @Inject constructor(
     fun readExifDetails(path: String): ExifDetails {
         return try {
             val exif = ExifInterface(path)
-            val latLong = FloatArray(2)
-            val hasGps = exif.getLatLong(latLong)
+            val latLong = exif.latLong
+            val hasGps = latLong != null
 
             ExifDetails(
                 cameraMake = exif.getAttribute(ExifInterface.TAG_MAKE) ?: "Unknown",
@@ -409,8 +520,8 @@ class VaultAndFileManager @Inject constructor(
                 iso = exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY) ?: "N/A",
                 shutterSpeed = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME)?.let { "${it}s" } ?: "N/A",
                 dateTimeOriginal = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL) ?: "N/A",
-                gpsLatitude = if (hasGps) latLong[0].toDouble() else null,
-                gpsLongitude = if (hasGps) latLong[1].toDouble() else null,
+                gpsLatitude = if (hasGps) latLong!![0] else null,
+                gpsLongitude = if (hasGps) latLong!![1] else null,
                 flash = exif.getAttribute(ExifInterface.TAG_FLASH) ?: "N/A",
                 whiteBalance = exif.getAttribute(ExifInterface.TAG_WHITE_BALANCE) ?: "Auto",
                 dimensions = "${exif.getAttribute(ExifInterface.TAG_IMAGE_WIDTH) ?: 0} x ${exif.getAttribute(ExifInterface.TAG_IMAGE_LENGTH) ?: 0}"

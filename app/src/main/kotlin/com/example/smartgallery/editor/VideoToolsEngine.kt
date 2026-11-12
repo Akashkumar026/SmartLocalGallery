@@ -1,17 +1,20 @@
 package com.example.smartgallery.editor
 
+import android.content.ContentValues
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
-import com.yausername.ffmpeg.FFmpeg
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.nio.ByteBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,6 +30,7 @@ class VideoToolsEngine @Inject constructor(
 
     /**
      * Lossless Video Trimming via Android MediaExtractor & MediaMuxer without re-encoding.
+     * Compliant with Android 11+ Scoped Storage (stages in cache, then publishes to MediaStore).
      */
     suspend fun trimVideoLossless(
         inputPath: String,
@@ -34,15 +38,12 @@ class VideoToolsEngine @Inject constructor(
         endMs: Long
     ): File = withContext(Dispatchers.IO) {
         val inputFile = File(inputPath)
-        val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "SmartGallery/Trimmed")
-        if (!outDir.exists()) outDir.mkdirs()
-
-        val outFile = File(outDir, "trim_${System.currentTimeMillis()}_${inputFile.name}")
+        val tempFile = File(context.cacheDir, "temp_trim_${System.currentTimeMillis()}_${inputFile.name}")
 
         val extractor = MediaExtractor()
         extractor.setDataSource(inputPath)
 
-        val muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val muxer = MediaMuxer(tempFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         val trackCount = extractor.trackCount
         val trackMap = HashMap<Int, Int>()
 
@@ -88,27 +89,55 @@ class VideoToolsEngine @Inject constructor(
         muxer.stop()
         muxer.release()
 
-        Log.i(TAG, "Lossless video trimmed successfully to ${outFile.absolutePath}")
-        outFile
+        // Publish to MediaStore (Movies/SmartGallery/Trimmed)
+        val outDisplayName = "trim_${System.currentTimeMillis()}_${inputFile.name}"
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, outDisplayName)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000L)
+            put(MediaStore.Video.Media.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/SmartGallery/Trimmed")
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+        }
+
+        val targetUri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+        if (targetUri != null) {
+            context.contentResolver.openOutputStream(targetUri)?.use { out ->
+                FileInputStream(tempFile).use { it.copyTo(out) }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                context.contentResolver.update(targetUri, values, null, null)
+            }
+            tempFile.delete()
+        }
+
+        Log.i(TAG, "Lossless video trimmed successfully to MediaStore ($outDisplayName)")
+        val finalPublicFile = File(
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "SmartGallery/Trimmed"),
+            outDisplayName
+        )
+        finalPublicFile
     }
 
     /**
      * Extracts MP3/M4A audio from video file using bundled native FFmpeg.
+     * Compliant with Android 11+ Scoped Storage (stages in cache, then publishes to MediaStore).
      */
     suspend fun extractAudioFromVideo(
         inputVideoPath: String,
         outputFormat: String = "mp3" // "mp3" or "m4a"
     ): File = withContext(Dispatchers.IO) {
         val inputFile = File(inputVideoPath)
-        val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "SmartGallery/ExtractedAudio")
-        if (!outDir.exists()) outDir.mkdirs()
-
         val outName = "${inputFile.nameWithoutExtension}_audio.${outputFormat}"
-        val outFile = File(outDir, outName)
+        val tempFile = File(context.cacheDir, "temp_extract_${System.currentTimeMillis()}_$outName")
 
         val cmd = when (outputFormat.lowercase()) {
-            "m4a" -> arrayOf("-y", "-i", inputVideoPath, "-vn", "-c:a", "copy", outFile.absolutePath)
-            else -> arrayOf("-y", "-i", inputVideoPath, "-vn", "-c:a", "libmp3lame", "-q:a", "2", outFile.absolutePath)
+            "m4a" -> arrayOf("-y", "-i", inputVideoPath, "-vn", "-c:a", "copy", tempFile.absolutePath)
+            else -> arrayOf("-y", "-i", inputVideoPath, "-vn", "-c:a", "libmp3lame", "-q:a", "2", tempFile.absolutePath)
         }
 
         try {
@@ -133,8 +162,37 @@ class VideoToolsEngine @Inject constructor(
             throw e
         }
 
-        Log.i(TAG, "Audio extracted successfully: ${outFile.absolutePath}")
-        outFile
+        // Publish to MediaStore (Music/SmartGallery/ExtractedAudio)
+        val mime = if (outputFormat.lowercase() == "m4a") "audio/mp4" else "audio/mpeg"
+        val values = ContentValues().apply {
+            put(MediaStore.Audio.Media.DISPLAY_NAME, outName)
+            put(MediaStore.Audio.Media.MIME_TYPE, mime)
+            put(MediaStore.Audio.Media.DATE_ADDED, System.currentTimeMillis() / 1000L)
+            put(MediaStore.Audio.Media.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Audio.Media.RELATIVE_PATH, "Music/SmartGallery/ExtractedAudio")
+                put(MediaStore.Audio.Media.IS_PENDING, 1)
+            }
+        }
+
+        val targetUri = context.contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+        if (targetUri != null) {
+            context.contentResolver.openOutputStream(targetUri)?.use { out ->
+                FileInputStream(tempFile).use { it.copyTo(out) }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Audio.Media.IS_PENDING, 0)
+                context.contentResolver.update(targetUri, values, null, null)
+            }
+            tempFile.delete()
+        }
+
+        Log.i(TAG, "Audio extracted successfully to MediaStore: $outName")
+        val finalPublicFile = File(
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "SmartGallery/ExtractedAudio"),
+            outName
+        )
+        finalPublicFile
     }
 }
-

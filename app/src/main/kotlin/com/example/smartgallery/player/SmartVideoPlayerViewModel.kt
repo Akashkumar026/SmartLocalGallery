@@ -2,6 +2,8 @@ package com.example.smartgallery.player
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
@@ -31,6 +33,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,6 +74,7 @@ class SmartVideoPlayerViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val db: GalleryDatabase,
     private val id3Engine: LyricsAndId3Engine,
+    private val vaultManager: com.example.smartgallery.vault.VaultAndFileManager,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -204,6 +208,16 @@ class SmartVideoPlayerViewModel @Inject constructor(
     private var playerListener: Player.Listener? = null
     private var currentMediaPath: String? = null
 
+    // Hardware Audio Effects
+    private var equalizer: Equalizer? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+
+    // LibVLC fallback flag
+    private val _useVlcFallback = MutableStateFlow(false)
+    val useVlcFallback: StateFlow<Boolean> = _useVlcFallback.asStateFlow()
+    private val _currentUri = MutableStateFlow<Uri?>(null)
+    val currentUri: StateFlow<Uri?> = _currentUri.asStateFlow()
+
     // â”€â”€ A-B repeat polling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private var abRepeatJob: Job? = null
 
@@ -213,6 +227,11 @@ class SmartVideoPlayerViewModel @Inject constructor(
 
     fun initPlayer(player: Player) {
         this.player = player
+
+        (player as? androidx.media3.exoplayer.ExoPlayer)?.let { exo ->
+            bindAudioEffects(exo.audioSessionId)
+        }
+
         val listener = object : Player.Listener {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -234,6 +253,9 @@ class SmartVideoPlayerViewModel @Inject constructor(
                     Player.STATE_READY, Player.STATE_BUFFERING -> {
                         _duration.value = player.duration.coerceAtLeast(0L)
                         _bufferedPosition.value = player.bufferedPosition
+                        (player as? androidx.media3.exoplayer.ExoPlayer)?.let { exo ->
+                            bindAudioEffects(exo.audioSessionId)
+                        }
                         updateCodecInfo(player)
                     }
                     Player.STATE_ENDED -> { /* handled in service */ }
@@ -267,10 +289,18 @@ class SmartVideoPlayerViewModel @Inject constructor(
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(TAG, "Playback error encountered: ${error.errorCodeName}", error)
-                val currentPos = player.currentPosition
-                player.prepare()
-                player.seekTo(currentPos)
-                player.play()
+                if (error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+                ) {
+                    Log.i(TAG, "ExoPlayer decoder unsupported. Engaging LibVLC fallback player.")
+                    _useVlcFallback.value = true
+                } else {
+                    val currentPos = player.currentPosition
+                    player.prepare()
+                    player.seekTo(currentPos)
+                    player.play()
+                }
             }
         }
         playerListener = listener
@@ -280,20 +310,85 @@ class SmartVideoPlayerViewModel @Inject constructor(
         startAbRepeatChecker()
     }
 
+    fun bindAudioEffects(sessionId: Int) {
+        if (sessionId <= 0) return
+        try {
+            equalizer?.release()
+            equalizer = Equalizer(0, sessionId).apply {
+                enabled = true
+            }
+            applyCurrentEqualizer()
+        } catch (e: Exception) {
+            Log.w(TAG, "Equalizer init error: ${e.message}")
+        }
+
+        try {
+            loudnessEnhancer?.release()
+            loudnessEnhancer = LoudnessEnhancer(sessionId).apply {
+                enabled = true
+            }
+            applyVolume(_volumeBoostPercent.value)
+        } catch (e: Exception) {
+            Log.w(TAG, "LoudnessEnhancer init error: ${e.message}")
+        }
+    }
+
+    private fun applyCurrentEqualizer() {
+        viewModelScope.launch {
+            val s = settings.settingsFlow.first()
+            try {
+                val array = org.json.JSONArray(s.eqBandGainsJson)
+                val gains = IntArray(array.length()) { i -> array.getInt(i) }
+                equalizer?.let { eq ->
+                    val bands = eq.numberOfBands.toInt()
+                    val minLevel = eq.bandLevelRange[0]
+                    val maxLevel = eq.bandLevelRange[1]
+                    for (i in 0 until minOf(bands, gains.size)) {
+                        eq.setBandLevel(i.toShort(), gains[i].coerceIn(minLevel.toInt(), maxLevel.toInt()).toShort())
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Media loading
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fun loadMedia(path: String, startPositionMs: Long = 0L) {
         currentMediaPath = path
-        val uri       = Uri.fromFile(File(path))
-        val mediaItem = MediaItem.Builder()
-            .setUri(uri)
-            .build()
-        player?.run {
-            setMediaItem(mediaItem, startPositionMs)
-            prepare()
-            play()
+        _useVlcFallback.value = false
+        val uri = if (path.startsWith("content://") || path.startsWith("vault://") || path.startsWith("http://") || path.startsWith("https://")) {
+            Uri.parse(path)
+        } else {
+            Uri.fromFile(File(path))
+        }
+        _currentUri.value = uri
+
+        if (uri.scheme == "vault") {
+            try {
+                val factory = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(
+                    vaultManager.getEncryptedDataSourceFactory()
+                )
+                val mediaItem = MediaItem.Builder().setUri(uri).build()
+                val mediaSource = factory.createMediaSource(mediaItem)
+                (player as? androidx.media3.exoplayer.ExoPlayer)?.let { exo ->
+                    exo.setMediaSource(mediaSource, startPositionMs)
+                    exo.prepare()
+                    exo.play()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error playing encrypted vault media: ${e.message}", e)
+            }
+        } else {
+            val mediaItem = MediaItem.Builder()
+                .setUri(uri)
+                .build()
+            player?.run {
+                setMediaItem(mediaItem, startPositionMs)
+                prepare()
+                play()
+            }
         }
         loadBookmarksForPath(path)
     }
@@ -386,9 +481,11 @@ class SmartVideoPlayerViewModel @Inject constructor(
         if (_isMuted.value) return
         if (boostPercent <= 100f) {
             player?.volume = boostPercent / 100f
+            try { loudnessEnhancer?.setTargetGain(0) } catch (_: Exception) {}
         } else {
             player?.volume = 1.0f
-            // Actual LoudnessEnhancer boost is handled in PlaybackService via CMD_SET_VOLUME_BOOST
+            val gainMb = ((boostPercent - 100f) * 30f).toInt()
+            try { loudnessEnhancer?.setTargetGain(gainMb) } catch (_: Exception) {}
         }
         viewModelScope.launch {
             settings.setVolumeBoostPercent(boostPercent)
@@ -572,19 +669,28 @@ class SmartVideoPlayerViewModel @Inject constructor(
 
                 val ts        = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
                 val fileName  = "Screenshot_$ts.png"
-                val dir       = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    "SmartGallery"
-                ).also { it.mkdirs() }
-                val outFile   = File(dir, fileName)
-                FileOutputStream(outFile).use { fos ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos)
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(android.provider.MediaStore.Images.Media.DATE_ADDED, System.currentTimeMillis() / 1000L)
+                    put(android.provider.MediaStore.Images.Media.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SmartGallery")
+                        put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                    }
                 }
-                // Notify MediaScanner
-                android.media.MediaScannerConnection.scanFile(
-                    context, arrayOf(outFile.absolutePath), arrayOf("image/png"), null
-                )
-                Log.d(TAG, "Screenshot saved: ${outFile.absolutePath}")
+                val targetUri = context.contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                if (targetUri != null) {
+                    context.contentResolver.openOutputStream(targetUri)?.use { fos ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos)
+                    }
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        values.clear()
+                        values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                        context.contentResolver.update(targetUri, values, null, null)
+                    }
+                }
+                Log.d(TAG, "Screenshot saved to MediaStore: $fileName")
             } catch (e: Exception) {
                 Log.e(TAG, "Screenshot failed", e)
             }
@@ -601,11 +707,7 @@ class SmartVideoPlayerViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-                val outDir = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    "SmartGallery/GIFs"
-                ).also { it.mkdirs() }
-                val outFile = File(outDir, "GIF_$ts.gif")
+                val tempFile = File(context.cacheDir, "temp_gif_$ts.gif")
 
                 val ffmpegDir = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg")
                 val ffmpegBin = File(ffmpegDir, "bin/ffmpeg").takeIf { it.exists() }
@@ -620,7 +722,7 @@ class SmartVideoPlayerViewModel @Inject constructor(
                     "-i", path,
                     "-vf", "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
                     "-loop", "0",
-                    outFile.absolutePath
+                    tempFile.absolutePath
                 )
 
                 val pb = ProcessBuilder(cmd)
@@ -631,15 +733,37 @@ class SmartVideoPlayerViewModel @Inject constructor(
                 }
                 val exitCode = process.waitFor()
 
-                if (exitCode == 0 && outFile.exists() && outFile.length() > 0) {
-                    _gifMakerState.value = GifMakerState.Done(outFile.absolutePath)
-                    android.media.MediaScannerConnection.scanFile(
-                        context,
-                        arrayOf(outFile.absolutePath),
-                        arrayOf("image/gif"),
-                        null
-                    )
-                    Log.d(TAG, "5-Second Animated GIF saved: ${outFile.absolutePath}")
+                if (exitCode == 0 && tempFile.exists() && tempFile.length() > 0) {
+                    val outDisplayName = "GIF_$ts.gif"
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, outDisplayName)
+                        put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/gif")
+                        put(android.provider.MediaStore.Images.Media.DATE_ADDED, System.currentTimeMillis() / 1000L)
+                        put(android.provider.MediaStore.Images.Media.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SmartGallery/GIFs")
+                            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                        }
+                    }
+                    val targetUri = context.contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    if (targetUri != null) {
+                        context.contentResolver.openOutputStream(targetUri)?.use { outStream ->
+                            tempFile.inputStream().use { it.copyTo(outStream) }
+                        }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            values.clear()
+                            values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                            context.contentResolver.update(targetUri, values, null, null)
+                        }
+                    }
+                    tempFile.delete()
+                    val publicPath = File(
+                        File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES), "SmartGallery/GIFs"),
+                        outDisplayName
+                    ).absolutePath
+
+                    _gifMakerState.value = GifMakerState.Done(publicPath)
+                    Log.d(TAG, "5-Second Animated GIF saved: $publicPath")
                 } else {
                     _gifMakerState.value = GifMakerState.Idle
                 }
@@ -804,6 +928,16 @@ class SmartVideoPlayerViewModel @Inject constructor(
     fun setEqBandGains(gains: IntArray) {
         viewModelScope.launch {
             settings.setEqBandGains(gains)
+            equalizer?.let { eq ->
+                val bands = eq.numberOfBands.toInt()
+                val minLevel = eq.bandLevelRange[0]
+                val maxLevel = eq.bandLevelRange[1]
+                for (i in 0 until minOf(bands, gains.size)) {
+                    try {
+                        eq.setBandLevel(i.toShort(), gains[i].coerceIn(minLevel.toInt(), maxLevel.toInt()).toShort())
+                    } catch (_: Exception) {}
+                }
+            }
         }
     }
 
@@ -832,6 +966,10 @@ class SmartVideoPlayerViewModel @Inject constructor(
     override fun onCleared() {
         ActivePlayerRegistry.setPlayerActive(false)
         playerListener?.let { player?.removeListener(it) }
+        try { equalizer?.release() } catch (_: Exception) {}
+        try { loudnessEnhancer?.release() } catch (_: Exception) {}
+        equalizer = null
+        loudnessEnhancer = null
         abRepeatJob?.cancel()
         controlsHideJob?.cancel()
         super.onCleared()

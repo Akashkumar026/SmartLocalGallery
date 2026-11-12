@@ -416,18 +416,20 @@ class MainViewModel @Inject constructor(
     }
 
     private fun buildAlbums(items: List<MediaItem>) {
-        val grouped = items.groupBy { it.bucketId }
-        val albumList = grouped.map { (bucketId, bucketItems) ->
-            AlbumGroup(
-                bucketId = bucketId,
-                bucketName = bucketItems.firstOrNull()?.bucketName ?: "Folder",
-                coverMediaItem = bucketItems.firstOrNull(),
-                itemCount = bucketItems.size,
-                totalSizeBytes = bucketItems.sumOf { it.size }
-            )
-        }.sortedByDescending { it.itemCount }
+        viewModelScope.launch(Dispatchers.Default) {
+            val grouped = items.groupBy { it.bucketId }
+            val albumList = grouped.map { (bucketId, bucketItems) ->
+                AlbumGroup(
+                    bucketId = bucketId,
+                    bucketName = bucketItems.firstOrNull()?.bucketName ?: "Folder",
+                    coverMediaItem = bucketItems.firstOrNull(),
+                    itemCount = bucketItems.size,
+                    totalSizeBytes = bucketItems.sumOf { it.size }
+                )
+            }.sortedByDescending { it.itemCount }
 
-        _albums.value = albumList
+            _albums.value = albumList
+        }
     }
 
     private fun loadMemories() {

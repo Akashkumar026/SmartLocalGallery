@@ -58,7 +58,11 @@ data class MediaItem(
     val isBestShot: Boolean = false,
     val faceEmbeddingIds: String = "[]",
     val albumName: String? = null,
-    val smartCategory: String? = null
+    val smartCategory: String? = null,
+    val isUserOverridden: Boolean = false,
+    val hasSensitiveId: Boolean = false,
+    val classifierVersion: Int = 0,
+    val generationModified: Long = 0L
 ) {
     val contentUri: android.net.Uri
         get() = if (mediaStoreId > 0L) {
@@ -237,7 +241,8 @@ data class MediaFts(
     @PrimaryKey @ColumnInfo(name = "rowid") val rowid: Long,
     val displayName: String,
     val ocrText: String,
-    val bucketName: String
+    val bucketName: String,
+    val detectedLabels: String = ""
 )
 
 @Immutable
@@ -353,10 +358,16 @@ interface MediaItemDao {
     @Query("SELECT * FROM media_items WHERE smartCategory = :category AND isHidden = 0 AND isVaultItem = 0 AND isTrashed = 0 ORDER BY dateAdded DESC")
     fun getBySmartCategory(category: String): Flow<List<MediaItem>>
 
-    @Query("UPDATE media_items SET smartCategory = :category WHERE id = :id")
+    @Query("UPDATE media_items SET smartCategory = :category WHERE id = :id AND isUserOverridden = 0")
     suspend fun updateSmartCategory(id: Long, category: String?)
 
-    @Query("SELECT * FROM media_items WHERE (smartCategory IS NULL OR smartCategory = '') AND mediaType = 'IMAGE' AND isTrashed = 0")
+    @Query("UPDATE media_items SET smartCategory = :category, classifierVersion = :version, hasSensitiveId = :hasSensitiveId, ocrText = :ocrText WHERE id = :id AND isUserOverridden = 0")
+    suspend fun updateClassification(id: Long, category: String?, version: Int, hasSensitiveId: Boolean, ocrText: String?)
+
+    @Query("UPDATE media_items SET smartCategory = :category, isUserOverridden = 1 WHERE id = :id")
+    suspend fun setUserOverrideCategory(id: Long, category: String?)
+
+    @Query("SELECT * FROM media_items WHERE (smartCategory IS NULL OR smartCategory = '') AND isUserOverridden = 0 AND mediaType = 'IMAGE' AND isTrashed = 0")
     suspend fun getUnclassifiedImages(): List<MediaItem>
 
     @Query("SELECT COUNT(*) FROM media_items WHERE smartCategory = :category AND isHidden = 0 AND isVaultItem = 0 AND isTrashed = 0")
@@ -551,11 +562,14 @@ interface DownloadTaskDao {
 
 @Dao
 interface MediaFtsDao {
-    @Query("INSERT INTO media_fts(rowid, displayName, ocrText, bucketName) VALUES(:id, :name, :ocr, :bucket)")
-    suspend fun insert(id: Long, name: String, ocr: String, bucket: String)
+    @Query("INSERT OR REPLACE INTO media_fts(rowid, displayName, ocrText, bucketName, detectedLabels) VALUES(:id, :name, :ocr, :bucket, :labels)")
+    suspend fun insert(id: Long, name: String, ocr: String, bucket: String, labels: String = "")
 
     @Query("DELETE FROM media_fts WHERE rowid = :id")
     suspend fun delete(id: Long)
+
+    @Query("DELETE FROM media_fts")
+    suspend fun clearAll()
 }
 
 @Dao
@@ -597,7 +611,7 @@ interface VaultItemDao {
         MediaFts::class,
         VaultItemEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class GalleryDatabase : RoomDatabase() {

@@ -33,6 +33,7 @@ import com.example.smartgallery.data.db.DownloadTask
 import com.example.smartgallery.data.db.GalleryDatabase
 import com.example.smartgallery.data.settings.AppSettings
 import com.example.smartgallery.data.settings.SettingsRepository
+import com.example.smartgallery.downloader.DownloadError
 import com.example.smartgallery.downloader.DownloadWorker
 import com.example.smartgallery.downloader.MediaDownloaderEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -234,6 +235,37 @@ fun DownloaderScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Legal Compliance Disclaimer Banner
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Gavel,
+                            contentDescription = "Legal Compliance",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "Notice: SmartLocalGallery is distributed strictly via GitHub. You must comply with source site Terms of Service and applicable copyright laws.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+
             // Strict Offline Lockdown Notice
             if (appSettings.strictOfflineLockdown) {
                 item {
@@ -626,26 +658,58 @@ fun DownloaderScreen(
                             }
 
                             if (task.status == "FAILED" && !task.errorMsg.isNullOrBlank()) {
+                                val typedError = DownloadError.fromString(task.errorMsg)
+                                val categoryLabel = when (typedError) {
+                                    is DownloadError.Network -> "Network Error"
+                                    is DownloadError.StorageFull -> "Storage Full"
+                                    is DownloadError.FormatNotFound -> "Format Unavailable"
+                                    is DownloadError.UnsupportedSite -> "Unsupported Link"
+                                    is DownloadError.Unavailable -> "Content Unavailable"
+                                    is DownloadError.Cancelled -> "Cancelled"
+                                    is DownloadError.Unknown -> "Download Failure"
+                                }
                                 Spacer(Modifier.height(8.dp))
                                 Surface(
                                     color = MaterialTheme.colorScheme.errorContainer,
                                     shape = RoundedCornerShape(8.dp),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = task.errorMsg,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onErrorContainer,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        TextButton(onClick = { viewModel.resumeDownload(task) }) {
-                                            Text("Retry", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                                    Column(modifier = Modifier.padding(10.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.2f),
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = categoryLabel,
+                                                    color = MaterialTheme.colorScheme.error,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            if (typedError.isRetryable) {
+                                                FilledTonalButton(
+                                                    onClick = { viewModel.resumeDownload(task) },
+                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                                    modifier = Modifier.height(32.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Refresh, contentDescription = "Retry", modifier = Modifier.size(16.dp))
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Text("Retry", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
                                         }
+                                        Spacer(Modifier.height(6.dp))
+                                        Text(
+                                            text = typedError.message,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
                                     }
                                 }
                             }

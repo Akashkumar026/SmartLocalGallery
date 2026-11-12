@@ -1,13 +1,16 @@
 package com.example.smartgallery.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -15,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.smartgallery.engine.OrchestratorState
+import com.example.smartgallery.engine.PipelineError
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,6 +38,8 @@ fun OrchestratorHudSheet(
     onCancelFaces: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    var viewingErrorsFor by remember { mutableStateOf<List<PipelineError>?>(null) }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         dragHandle = { BottomSheetDefaults.DragHandle() }
@@ -88,9 +94,11 @@ fun OrchestratorHudSheet(
                 throughput = if (state.duplicates.itemsPerSec > 0) String.format(Locale.ROOT, "%.1f items/s", state.duplicates.itemsPerSec) else "",
                 isRunning = state.duplicates.isRunning,
                 isPaused = state.duplicates.isPaused,
+                errors = state.duplicates.errors,
                 onStart = onStartDuplicates,
                 onTogglePause = onTogglePauseDuplicates,
-                onCancel = onCancelDuplicates
+                onCancel = onCancelDuplicates,
+                onViewErrors = { viewingErrorsFor = state.duplicates.errors }
             )
 
             // Channel 2: Smart Document & Image Categorizer
@@ -103,9 +111,11 @@ fun OrchestratorHudSheet(
                 throughput = if (state.categorizer.itemsPerSec > 0) String.format(Locale.ROOT, "%.1f items/s", state.categorizer.itemsPerSec) else "",
                 isRunning = state.categorizer.isRunning,
                 isPaused = state.categorizer.isPaused,
+                errors = state.categorizer.errors,
                 onStart = onStartCategorizer,
                 onTogglePause = onTogglePauseCategorizer,
-                onCancel = onCancelCategorizer
+                onCancel = onCancelCategorizer,
+                onViewErrors = { viewingErrorsFor = state.categorizer.errors }
             )
 
             // Channel 3: Face Clustering Engine
@@ -118,11 +128,61 @@ fun OrchestratorHudSheet(
                 throughput = "",
                 isRunning = state.faces.isRunning,
                 isPaused = state.faces.isPaused,
+                errors = state.faces.errors,
                 onStart = onStartFaces,
                 onTogglePause = onTogglePauseFaces,
-                onCancel = onCancelFaces
+                onCancel = onCancelFaces,
+                onViewErrors = { viewingErrorsFor = state.faces.errors }
             )
         }
+    }
+
+    // Pipeline Errors Dialog
+    viewingErrorsFor?.let { errorList ->
+        AlertDialog(
+            onDismissRequest = { viewingErrorsFor = null },
+            title = { Text("Pipeline Failure Details (${errorList.size})") },
+            text = {
+                if (errorList.isEmpty()) {
+                    Text("No errors reported.")
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 350.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(errorList) { err ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text(
+                                        err.itemName,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    Text(
+                                        err.reason,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewingErrorsFor = null }) {
+                    Text("Close")
+                }
+            }
+        )
     }
 }
 
@@ -136,9 +196,11 @@ fun PipelineChannelCard(
     throughput: String,
     isRunning: Boolean,
     isPaused: Boolean,
+    errors: List<PipelineError> = emptyList(),
     onStart: () -> Unit,
     onTogglePause: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onViewErrors: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -199,18 +261,71 @@ fun PipelineChannelCard(
                 Spacer(Modifier.height(4.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(statusText, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
-                    if (throughput.isNotBlank()) {
-                        Text(throughput, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (errors.isNotEmpty()) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.clickable { onViewErrors() }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(12.dp))
+                                    Spacer(Modifier.width(2.dp))
+                                    Text(
+                                        "${errors.size} error${if (errors.size > 1) "s" else ""}",
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        if (throughput.isNotBlank()) {
+                            Text(throughput, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        }
                     }
                 }
             } else {
                 Spacer(Modifier.height(4.dp))
-                Text(statusText, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(statusText, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (errors.isNotEmpty()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.clickable { onViewErrors() }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(12.dp))
+                                Spacer(Modifier.width(2.dp))
+                                Text(
+                                    "${errors.size} error${if (errors.size > 1) "s" else ""}",
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
-

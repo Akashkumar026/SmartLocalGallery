@@ -102,8 +102,8 @@ class LocalGalleryEngine @Inject constructor(
     private suspend fun scanMediaCollection(collectionUri: Uri, mediaType: String): Int {
         var count = 0
         val isVisualOrAudio = mediaType == "VIDEO" || mediaType == "AUDIO"
-        val projection = if (isVisualOrAudio) {
-            arrayOf(
+        val baseProjection = if (isVisualOrAudio) {
+            mutableListOf(
                 MediaStore.MediaColumns._ID,
                 MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.DATA,
@@ -118,7 +118,7 @@ class LocalGalleryEngine @Inject constructor(
                 MediaStore.MediaColumns.DURATION
             )
         } else {
-            arrayOf(
+            mutableListOf(
                 MediaStore.MediaColumns._ID,
                 MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.DATA,
@@ -132,106 +132,148 @@ class LocalGalleryEngine @Inject constructor(
                 MediaStore.MediaColumns.BUCKET_DISPLAY_NAME
             )
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            baseProjection.add(MediaStore.MediaColumns.GENERATION_MODIFIED)
+        }
+        val projection = baseProjection.toTypedArray()
 
-        try {
-            context.contentResolver.query(
-                collectionUri,
-                projection,
-                null,
-                null,
-                "${MediaStore.MediaColumns.DATE_ADDED} DESC"
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                val pathCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                val mimeCol = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
-                val sizeCol = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
-                val dateAddCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
-                val dateModCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
-                val widthCol = cursor.getColumnIndex(MediaStore.MediaColumns.WIDTH)
-                val heightCol = cursor.getColumnIndex(MediaStore.MediaColumns.HEIGHT)
-                val bucketIdCol = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_ID)
-                val bucketNameCol = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
-                val durCol = if (isVisualOrAudio) cursor.getColumnIndex(MediaStore.MediaColumns.DURATION) else -1
+        val pageSize = 500
+        var offset = 0
+        var hasMore = true
+        val itemsToInsert = mutableListOf<MediaItem>()
 
-                val itemsToInsert = mutableListOf<MediaItem>()
-
-                while (cursor.moveToNext()) {
-                    try {
-                        val msId = cursor.getLong(idCol)
-                        val path = if (pathCol >= 0) cursor.getStringOrNull(pathCol) ?: "" else ""
-                        val dateModified = if (dateModCol >= 0) cursor.getLong(dateModCol) else 0L
-
-                        // Skip unchanged files by checking _ID and DATE_MODIFIED in Room
-                        val existing = db.mediaItemDao().getByMediaStoreId(msId)
-                        if (existing != null && existing.dateModified == dateModified) {
-                            continue
-                        }
-
-                        val size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
-                        if (size <= 0L) continue
-
-                        val name = cursor.getStringOrNull(nameCol) ?: path.substringAfterLast('/', "media_$msId")
-                        val mime = if (mimeCol >= 0) cursor.getStringOrNull(mimeCol) ?: "application/octet-stream" else "application/octet-stream"
-                        val dateAdded = if (dateAddCol >= 0) cursor.getLong(dateAddCol) else dateModified
-                        val width = if (widthCol >= 0) cursor.getInt(widthCol) else 0
-                        val height = if (heightCol >= 0) cursor.getInt(heightCol) else 0
-                        val bucketId = if (bucketIdCol >= 0) cursor.getLong(bucketIdCol) else 0L
-                        val bucketName = if (bucketNameCol >= 0) cursor.getStringOrNull(bucketNameCol) ?: "" else ""
-
-                        val itemUri = ContentUris.withAppendedId(collectionUri, msId)
-                        val durationMs = if (durCol >= 0 && !cursor.isNull(durCol)) {
-                            cursor.getLong(durCol)
-                        } else if (mediaType == "VIDEO" || mediaType == "AUDIO") {
-                            extractDurationMs(itemUri)
-                        } else 0L
-
-                        val smartAlbum = categorizeSmartAlbum(path, name, mime, width, height)
-                        val initialCategory = if (path.lowercase().contains("screenshot") || bucketName.lowercase().contains("screenshot") || name.lowercase().contains("screenshot")) {
-                            SmartCategoryClassifier.CATEGORY_SCREENSHOTS
-                        } else existing?.smartCategory
-
-                        val item = MediaItem(
-                            id = existing?.id ?: 0,
-                            mediaStoreId = msId,
-                            displayName = name,
-                            absolutePath = path.ifEmpty { itemUri.toString() },
-                            mimeType = mime,
-                            size = size,
-                            dateAdded = dateAdded,
-                            dateModified = dateModified,
-                            dateTaken = dateModified * 1000L,
-                            durationMs = durationMs,
-                            width = width,
-                            height = height,
-                            bucketId = bucketId,
-                            bucketName = bucketName,
-                            mediaType = mediaType,
-                            albumName = smartAlbum,
-                            smartCategory = initialCategory
-                        )
-
-                        itemsToInsert.add(item)
-                        count++
-
-                        if (itemsToInsert.size >= 100) {
-                            db.mediaItemDao().insertAll(itemsToInsert)
-                            itemsToInsert.clear()
-                        }
-                    } catch (itemErr: Exception) {
-                        Log.w(TAG, "Error parsing media item from cursor: ${itemErr.message}")
+        while (hasMore) {
+            try {
+                val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val bundle = android.os.Bundle().apply {
+                        putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, pageSize)
+                        putInt(android.content.ContentResolver.QUERY_ARG_OFFSET, offset)
+                        putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.MediaColumns.DATE_ADDED))
+                        putInt(android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION, android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
                     }
+                    context.contentResolver.query(collectionUri, projection, bundle, null)
+                } else {
+                    val sortOrder = "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT $pageSize OFFSET $offset"
+                    context.contentResolver.query(collectionUri, projection, null, null, sortOrder)
                 }
 
-                if (itemsToInsert.isNotEmpty()) {
-                    itemsToInsert.chunked(100).forEach { batch ->
-                        db.mediaItemDao().insertAll(batch)
-                    }
-                    itemsToInsert.clear()
+                if (cursor == null) {
+                    hasMore = false
+                    break
                 }
+
+                cursor.use { c ->
+                    val rowCount = c.count
+                    if (rowCount == 0) {
+                        hasMore = false
+                        return@use
+                    }
+
+                    val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val pathCol = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    val mimeCol = c.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
+                    val sizeCol = c.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                    val dateAddCol = c.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
+                    val dateModCol = c.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+                    val widthCol = c.getColumnIndex(MediaStore.MediaColumns.WIDTH)
+                    val heightCol = c.getColumnIndex(MediaStore.MediaColumns.HEIGHT)
+                    val bucketIdCol = c.getColumnIndex(MediaStore.MediaColumns.BUCKET_ID)
+                    val bucketNameCol = c.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                    val durCol = if (isVisualOrAudio) c.getColumnIndex(MediaStore.MediaColumns.DURATION) else -1
+                    val genModCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        c.getColumnIndex(MediaStore.MediaColumns.GENERATION_MODIFIED)
+                    } else -1
+
+                    while (c.moveToNext()) {
+                        try {
+                            val msId = c.getLong(idCol)
+                            val path = if (pathCol >= 0) c.getStringOrNull(pathCol) ?: "" else ""
+                            val dateModified = if (dateModCol >= 0) c.getLong(dateModCol) else 0L
+                            val genMod = if (genModCol >= 0) c.getLong(genModCol) else 0L
+
+                            // Skip unchanged files by checking _ID, DATE_MODIFIED, and GENERATION_MODIFIED
+                            val existing = db.mediaItemDao().getByMediaStoreId(msId)
+                            if (existing != null && existing.dateModified == dateModified &&
+                                (genMod == 0L || existing.generationModified == genMod)) {
+                                continue
+                            }
+
+                            val size = if (sizeCol >= 0) c.getLong(sizeCol) else 0L
+                            if (size <= 0L) continue
+
+                            val name = c.getStringOrNull(nameCol) ?: path.substringAfterLast('/', "media_$msId")
+                            val mime = if (mimeCol >= 0) c.getStringOrNull(mimeCol) ?: "application/octet-stream" else "application/octet-stream"
+                            val dateAdded = if (dateAddCol >= 0) c.getLong(dateAddCol) else dateModified
+                            val width = if (widthCol >= 0) c.getInt(widthCol) else 0
+                            val height = if (heightCol >= 0) c.getInt(heightCol) else 0
+                            val bucketId = if (bucketIdCol >= 0) c.getLong(bucketIdCol) else 0L
+                            val bucketName = if (bucketNameCol >= 0) c.getStringOrNull(bucketNameCol) ?: "" else ""
+
+                            val itemUri = ContentUris.withAppendedId(collectionUri, msId)
+                            val durationMs = if (durCol >= 0 && !c.isNull(durCol)) {
+                                c.getLong(durCol)
+                            } else if (mediaType == "VIDEO" || mediaType == "AUDIO") {
+                                extractDurationMs(itemUri)
+                            } else 0L
+
+                            val smartAlbum = categorizeSmartAlbum(path, name, mime, width, height)
+                            val initialCategory = if (path.lowercase().contains("screenshot") || bucketName.lowercase().contains("screenshot") || name.lowercase().contains("screenshot")) {
+                                SmartCategoryClassifier.CATEGORY_SCREENSHOTS
+                            } else existing?.smartCategory
+
+                            val item = MediaItem(
+                                id = existing?.id ?: 0,
+                                mediaStoreId = msId,
+                                displayName = name,
+                                absolutePath = path.ifEmpty { itemUri.toString() },
+                                mimeType = mime,
+                                size = size,
+                                dateAdded = dateAdded,
+                                dateModified = dateModified,
+                                dateTaken = dateModified * 1000L,
+                                durationMs = durationMs,
+                                width = width,
+                                height = height,
+                                bucketId = bucketId,
+                                bucketName = bucketName,
+                                mediaType = mediaType,
+                                albumName = smartAlbum,
+                                smartCategory = initialCategory,
+                                isUserOverridden = existing?.isUserOverridden ?: false,
+                                hasSensitiveId = existing?.hasSensitiveId ?: false,
+                                classifierVersion = existing?.classifierVersion ?: 0,
+                                generationModified = genMod
+                            )
+
+                            itemsToInsert.add(item)
+                            count++
+
+                            if (itemsToInsert.size >= 100) {
+                                db.mediaItemDao().insertAll(itemsToInsert)
+                                itemsToInsert.clear()
+                            }
+                        } catch (itemErr: Exception) {
+                            Log.w(TAG, "Error parsing media item from cursor: ${itemErr.message}")
+                        }
+                    }
+
+                    offset += rowCount
+                    if (rowCount < pageSize) {
+                        hasMore = false
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error querying collection $collectionUri at offset $offset: ${e.message}")
+                hasMore = false
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error scanning media collection $collectionUri: ${e.message}", e)
+        }
+
+        if (itemsToInsert.isNotEmpty()) {
+            itemsToInsert.chunked(100).forEach { batch ->
+                db.mediaItemDao().insertAll(batch)
+            }
+            itemsToInsert.clear()
         }
         return count
     }
@@ -1129,18 +1171,28 @@ class LocalGalleryEngine @Inject constructor(
 
         try {
             val result = recognizer.process(image).await()
-            val text = result.text.trim()
-            if (text.length >= 20) {
-                db.mediaItemDao().updateOcrText(item.id, text)
-                db.mediaFtsDao().insert(item.id, item.displayName, text, item.bucketName)
-                
+            val rawText = result.text.trim()
+            val (sanitized, hasSensitiveId) = SmartCategoryClassifier.sanitizePii(rawText)
+            if (rawText.length >= 20) {
                 // Multi-signal intelligent document classification
-                val classified = SmartCategoryClassifier.classify(item, text)
-                if (classified != null) {
-                    db.mediaItemDao().updateSmartCategory(item.id, classified)
-                }
+                val classification = SmartCategoryClassifier.classifyMultiSignal(item, rawText)
+
+                db.mediaItemDao().updateClassification(
+                    id = item.id,
+                    category = classification.primaryCategory,
+                    version = classification.classifierVersion,
+                    hasSensitiveId = hasSensitiveId,
+                    ocrText = sanitized
+                )
+                db.mediaFtsDao().insert(
+                    id = item.id,
+                    name = item.displayName,
+                    ocr = sanitized ?: "",
+                    bucket = item.bucketName,
+                    labels = ""
+                )
             }
-            text
+            sanitized
         } catch (e: Exception) {
             Log.e(TAG, "OCR failed on ${item.displayName}: ${e.message}")
             null
@@ -1154,16 +1206,22 @@ class LocalGalleryEngine @Inject constructor(
         throttleIfPlayerActive()
 
         // Fast-path heuristic check
-        val quickCat = SmartCategoryClassifier.classify(item, item.ocrText)
-        if (quickCat == SmartCategoryClassifier.CATEGORY_SCREENSHOTS) {
-            db.mediaItemDao().updateSmartCategory(item.id, quickCat)
-            return@withContext quickCat
+        val quickResult = SmartCategoryClassifier.classifyMultiSignal(item, item.ocrText)
+        if (quickResult.primaryCategory == SmartCategoryClassifier.CATEGORY_SCREENSHOTS) {
+            db.mediaItemDao().updateClassification(
+                id = item.id,
+                category = quickResult.primaryCategory,
+                version = quickResult.classifierVersion,
+                hasSensitiveId = quickResult.hasSensitiveId,
+                ocrText = quickResult.sanitizedOcrText
+            )
+            return@withContext quickResult.primaryCategory
         }
 
         val uri = getItemUri(item)
         val bmp = decodeSubsampledBitmap(uri, sampleSize = 2, preferredConfig = Bitmap.Config.ARGB_8888)
             ?: decodeSubsampledBitmap(uri, sampleSize = 4, preferredConfig = Bitmap.Config.RGB_565)
-            ?: return@withContext quickCat
+            ?: return@withContext quickResult.primaryCategory
 
         try {
             val inputImage = InputImage.fromBitmap(bmp, 0)
@@ -1208,16 +1266,12 @@ class LocalGalleryEngine @Inject constructor(
             val labels = labelsResult.map { Pair(it.text, it.confidence) }
 
             // 4. OCR if text analysis is required
-            var ocrText = item.ocrText
-            if (ocrText.isNullOrBlank() && !hasBarcodes && faceCount == 0) {
+            var rawOcrText = item.ocrText
+            if (rawOcrText.isNullOrBlank() && !hasBarcodes && faceCount == 0) {
                 val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                ocrText = try {
+                rawOcrText = try {
                     val ocrResult = recognizer.process(inputImage).await()
                     val text = ocrResult.text.trim()
-                    if (text.length >= 20) {
-                        db.mediaItemDao().updateOcrText(item.id, text)
-                        db.mediaFtsDao().insert(item.id, item.displayName, text, item.bucketName)
-                    }
                     text
                 } catch (_: Exception) {
                     null
@@ -1226,20 +1280,35 @@ class LocalGalleryEngine @Inject constructor(
                 }
             }
 
-            // 5. Multi-signal classification
-            val category = SmartCategoryClassifier.classify(
+            // 5. Multi-signal classification & PII Sanitization
+            val classification = SmartCategoryClassifier.classifyMultiSignal(
                 item = item,
-                ocrText = ocrText,
+                ocrText = rawOcrText,
                 labels = labels,
                 faceCount = faceCount,
                 faceAreaFraction = faceAreaFraction,
                 hasBarcodes = hasBarcodes
             )
 
-            if (category != null && category != item.smartCategory) {
-                db.mediaItemDao().updateSmartCategory(item.id, category)
-            }
-            category
+            val labelString = labels.joinToString(" ") { it.first }
+
+            db.mediaItemDao().updateClassification(
+                id = item.id,
+                category = classification.primaryCategory,
+                version = classification.classifierVersion,
+                hasSensitiveId = classification.hasSensitiveId,
+                ocrText = classification.sanitizedOcrText
+            )
+
+            db.mediaFtsDao().insert(
+                id = item.id,
+                name = item.displayName,
+                ocr = classification.sanitizedOcrText ?: "",
+                bucket = item.bucketName,
+                labels = labelString
+            )
+
+            classification.primaryCategory
         } catch (e: Exception) {
             Log.w(TAG, "Multi-signal categorization failed for ${item.displayName}: ${e.message}")
             null
