@@ -2,8 +2,8 @@
 
 A modern, production-grade Android Gallery, Cinema Media Player, Universal Downloader, and Encrypted Vault built with **Jetpack Compose**, **AndroidX Media3 (ExoPlayer)**, **LibVLC 3.7.5 Universal Fallback**, **100% Offline ML Kit**, and **Hardware-Backed AES-256-GCM Encryption**.
 
-[![Release](https://img.shields.io/badge/Release-v1.0.0-blue.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v1.0.0)
-[![Direct Download APK](https://img.shields.io/badge/Download-APK%20(arm64--v8a)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v1.0.0/app-arm64-v8a-release.apk)
+[![Release](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v2.0.0)
+[![Direct Download APK](https://img.shields.io/badge/Download-APK%20v2.0.0%20(arm64--v8a)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v2.0.0/app-arm64-v8a-release.apk)
 [![compileSdk](https://img.shields.io/badge/compileSdk-35-orange.svg)]()
 [![minSdk](https://img.shields.io/badge/minSdk-26-yellow.svg)]()
 
@@ -13,14 +13,15 @@ A modern, production-grade Android Gallery, Cinema Media Player, Universal Downl
 
 Download the production-ready APK using any of the direct download options below:
 
-- 🚀 **[Download from GitHub Releases (Fastest CDN)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v1.0.0/app-arm64-v8a-release.apk)**
+- 🚀 **[Download v2.0.0 from GitHub Releases (Fastest CDN)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v2.0.0/app-arm64-v8a-release.apk)**
 - 📦 **[Download from Repository (Raw Mirror)](https://github.com/Akashkumar026/SmartLocalGallery/raw/main/release/app-arm64-v8a-release.apk)**
 - 📂 **[View in Repository Files](https://github.com/Akashkumar026/SmartLocalGallery/blob/main/release/app-arm64-v8a-release.apk)**
 
 ### 🛡️ Build Verification Details
+- **Version**: `2.0.0` (versionCode `2`)
 - **Filename**: `app-arm64-v8a-release.apk`
-- **File Size**: `101,800,676 bytes` (~97.08 MB)
-- **SHA-256 Checksum**: `7abe9dd729c0c7218c4ceaebe6f196d2487b4aedee500eceef0f260208ae1784`
+- **File Size**: `101,800,672 bytes` (~97.08 MB)
+- **SHA-256 Checksum**: `e076f8d5c7d13a085faf857bece2cba8958ea578f970f037d7267d90af2aae7f`
 - **Architecture**: `arm64-v8a` (Android 8.0+ / API 26–35)
 
 ---

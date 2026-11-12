@@ -39,3 +39,4 @@ A full architectural audit, security overhaul, feature completion, and verificat
 2. **Indian PII Privacy**: Aadhaar and PAN numbers are redacted prior to Room database insertion and FTS indexation.
 3. **Android 11–15 Scoped Storage**: All file exports (Lossless trimmer, Audio extractor, Downloader, GIF maker, Screenshots) stage outputs in `context.cacheDir` before inserting into public MediaStore via `ContentValues` with `IS_PENDING = 1`, streaming bytes, and clearing `IS_PENDING = 0`.
 4. **Hardware StrongBox Protection**: Master keys request StrongBox hardware security modules (HSM) on supported devices with automatic fallback to Android Keystore.
+

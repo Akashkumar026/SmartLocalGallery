@@ -92,3 +92,4 @@ class SettingsRepositoryTest {
         assertThat(lockoutUntil).isGreaterThan(now)
     }
 }
+

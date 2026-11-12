@@ -77,3 +77,4 @@ sealed class DownloadError(open val message: String, val isRetryable: Boolean) {
         }
     }
 }
+

@@ -62,3 +62,4 @@ class DownloadErrorTest {
         assertThat(error.message).contains("Socket closed unexpectedly")
     }
 }
+
