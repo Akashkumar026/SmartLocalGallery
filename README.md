@@ -11,11 +11,16 @@ A modern, production-grade Android Gallery, Cinema Media Player, Universal Downl
 
 ## 📥 Direct APK Download
 
-Download the production-ready APK directly from the repository:
-👉 **[Download app-arm64-v8a-release.apk (Repository Direct)](https://github.com/Akashkumar026/SmartLocalGallery/raw/main/release/app-arm64-v8a-release.apk)** (97.06 MB)
+Download the production-ready APK using any of the direct download options below:
 
-- **Repository Path**: [`release/app-arm64-v8a-release.apk`](https://github.com/Akashkumar026/SmartLocalGallery/blob/main/release/app-arm64-v8a-release.apk)
-- **SHA-256**: `82A4BEB2BF1DCA255CBDF5F146C516361AE620343C9B5E07C86C3D2342B150F0`
+- 🚀 **[Download from GitHub Releases (Fastest CDN)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v1.0.0/app-arm64-v8a-release.apk)**
+- 📦 **[Download from Repository (Raw Mirror)](https://github.com/Akashkumar026/SmartLocalGallery/raw/main/release/app-arm64-v8a-release.apk)**
+- 📂 **[View in Repository Files](https://github.com/Akashkumar026/SmartLocalGallery/blob/main/release/app-arm64-v8a-release.apk)**
+
+### 🛡️ Build Verification Details
+- **Filename**: `app-arm64-v8a-release.apk`
+- **File Size**: `101,776,404 bytes` (~97.06 MB)
+- **SHA-256 Checksum**: `82A4BEB2BF1DCA255CBDF5F146C516361AE620343C9B5E07C86C3D2342B150F0`
 - **Architecture**: `arm64-v8a` (Android 8.0+ / API 26–35)
 
 ---
