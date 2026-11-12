@@ -7,6 +7,7 @@ import android.os.Environment
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
@@ -262,6 +263,14 @@ class SmartVideoPlayerViewModel @Inject constructor(
                 _currentPosition.value  = player.currentPosition
                 _bufferedPosition.value = player.bufferedPosition
                 _duration.value         = player.duration.coerceAtLeast(0L)
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e(TAG, "Playback error encountered: ${error.errorCodeName}", error)
+                val currentPos = player.currentPosition
+                player.prepare()
+                player.seekTo(currentPos)
+                player.play()
             }
         }
         playerListener = listener

@@ -33,6 +33,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -159,6 +163,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -480,6 +485,10 @@ fun SmartVideoPlayerScreen(
         }
     }
 
+    LaunchedEffect(configuration.orientation) {
+        viewModel.showControlsTemporarily(3500L)
+    }
+
     // Handle PiP events
     LaunchedEffect(Unit) {
         viewModel.pipEvent.collect { enter ->
@@ -718,40 +727,172 @@ fun SmartVideoPlayerScreen(
 
         // â”€â”€ 3. GESTURE LAYER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (!screenLocked) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val screenWidthPx = if (containerSize.width > 0) containerSize.width.toFloat() else constraints.maxWidth.toFloat()
-                val screenHeightPx = if (containerSize.height > 0) containerSize.height.toFloat() else constraints.maxHeight.toFloat()
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(screenLocked) {
+                        val touchSlop = viewConfiguration.touchSlop
+                        var lastTapTime = 0L
+                        var lastTapPos = Offset.Zero
+                        var singleTapJob: Job? = null
 
-                // Pointer Input 1: Pinch-to-zoom and two-finger pan
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(containerSize, screenLocked) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                zoomScale = (zoomScale * zoom).coerceIn(0.5f, 5.0f)
-                                panOffsetX += pan.x
-                                panOffsetY += pan.y
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val downTime = System.currentTimeMillis()
+                            val startPos = down.position
+                            val screenWidth = size.width.toFloat()
+                            val screenHeight = size.height.toFloat()
+
+                            var isMultiTouch = false
+                            var isDrag = false
+                            var isLongPressActive = false
+                            var isHorizontalScrub = false
+                            var isVerticalBrightness = false
+                            var isVerticalVolume = false
+                            var scrubTargetMs = exoPlayer.currentPosition
+                            val durationMs = duration.coerceAtLeast(1L)
+                            val initialPositionMs = exoPlayer.currentPosition
+
+                            val isDoubleTapCandidate = (downTime - lastTapTime < 350L) &&
+                                ((startPos - lastTapPos).getDistance() < 120f)
+
+                            if (isDoubleTapCandidate) {
+                                singleTapJob?.cancel()
+                                singleTapJob = null
                             }
-                        }
-                )
 
-                // Pointer Input 2: Taps, Double taps, Long press
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(containerSize, screenLocked) {
-                            detectTapGestures(
-                                onTap = {
-                                    viewModel.toggleControls()
-                                },
-                                onDoubleTap = { offset ->
-                                    val seekSecs = appSettings.doubleTapSeekSecs
-                                    val leftThird = screenWidthPx / 3f
-                                    val rightThird = (screenWidthPx * 2f) / 3f
+                            val longPressJob = scope.launch {
+                                delay(450L)
+                                if (!isDrag && !isMultiTouch) {
+                                    isLongPressActive = true
+                                    speedBeforeLongPress = playbackSpeed
+                                    viewModel.setSpeed(2.0f)
+                                    triggerOsd(
+                                        OsdState(
+                                            icon = Icons.Default.Speed,
+                                            title = "2.0x Fast Forward",
+                                            valueText = "Speed Boost"
+                                        ),
+                                        durationMs = 3000L
+                                    )
+                                }
+                            }
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val activePointers = event.changes.filter { it.pressed }
+
+                                if (activePointers.isEmpty()) {
+                                    break
+                                }
+
+                                if (activePointers.size >= 2) {
+                                    isMultiTouch = true
+                                    longPressJob.cancel()
+                                    if (isLongPressActive) {
+                                        isLongPressActive = false
+                                        viewModel.setSpeed(speedBeforeLongPress)
+                                    }
+
+                                    val zoom = event.calculateZoom()
+                                    val pan = event.calculatePan()
+                                    zoomScale = (zoomScale * zoom).coerceIn(0.5f, 5.0f)
+                                    panOffsetX += pan.x
+                                    panOffsetY += pan.y
+                                    event.changes.forEach { it.consume() }
+                                    continue
+                                }
+
+                                val pointer = activePointers[0]
+                                val currentPos = pointer.position
+                                val dx = currentPos.x - startPos.x
+                                val dy = currentPos.y - startPos.y
+                                val deltaY = pointer.positionChange().y
+
+                                if (!isDrag && !isMultiTouch) {
+                                    val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                                    if (dist > touchSlop) {
+                                        isDrag = true
+                                        longPressJob.cancel()
+                                        if (isLongPressActive) {
+                                            isLongPressActive = false
+                                            viewModel.setSpeed(speedBeforeLongPress)
+                                        }
+
+                                        if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
+                                            isHorizontalScrub = true
+                                            activeGesture = ActiveGesture.SEEK
+                                        } else {
+                                            if (startPos.x < screenWidth / 2f) {
+                                                isVerticalBrightness = true
+                                                activeGesture = ActiveGesture.BRIGHTNESS
+                                            } else {
+                                                isVerticalVolume = true
+                                                activeGesture = ActiveGesture.VOLUME
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (isDrag) {
+                                    pointer.consume()
 
                                     when {
-                                        offset.x < leftThird -> {
-                                            // Seek backward
+                                        isHorizontalScrub -> {
+                                            val seekFraction = (currentPos.x - startPos.x) / screenWidth
+                                            val deltaMs = (seekFraction * 90_000L).toLong()
+                                            scrubTargetMs = (initialPositionMs + deltaMs).coerceIn(0L, durationMs)
+                                            seekPreviewMs = scrubTargetMs
+                                            seekDeltaMs = deltaMs
+                                        }
+                                        isVerticalBrightness -> {
+                                            val deltaFraction = -deltaY / screenHeight
+                                            localBrightness = (localBrightness + deltaFraction * 1.5f).coerceIn(0.01f, 1.0f)
+                                            setWindowBrightness(activity, localBrightness)
+                                        }
+                                        isVerticalVolume -> {
+                                            val deltaFraction = -deltaY / screenHeight
+                                            val currentVolPct = volumeBoostPercent
+                                            val newVolPct = (currentVolPct + deltaFraction * 150f).coerceIn(0f, 200f)
+                                            if (newVolPct > currentVolPct) {
+                                                viewModel.increaseVolume()
+                                            } else if (newVolPct < currentVolPct) {
+                                                viewModel.decreaseVolume()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            longPressJob.cancel()
+
+                            if (isLongPressActive) {
+                                isLongPressActive = false
+                                viewModel.setSpeed(speedBeforeLongPress)
+                                triggerOsd(
+                                    OsdState(
+                                        icon = Icons.Default.Speed,
+                                        title = "${String.format(Locale.US, "%.1f", speedBeforeLongPress)}x",
+                                        valueText = "Speed Restored"
+                                    )
+                                )
+                            } else if (isDrag) {
+                                if (isHorizontalScrub) {
+                                    exoPlayer.seekTo(scrubTargetMs)
+                                }
+                                activeGesture = ActiveGesture.NONE
+                                isHorizontalScrub = false
+                                isVerticalBrightness = false
+                                isVerticalVolume = false
+                            } else if (!isMultiTouch) {
+                                if (isDoubleTapCandidate) {
+                                    lastTapTime = 0L
+                                    val seekSecs = appSettings.doubleTapSeekSecs
+                                    val leftThird = screenWidth / 3f
+                                    val rightThird = (screenWidth * 2f) / 3f
+
+                                    when {
+                                        startPos.x < leftThird -> {
                                             val newPos = (exoPlayer.currentPosition - seekSecs * 1000L).coerceAtLeast(0L)
                                             exoPlayer.seekTo(newPos)
                                             doubleTapSeekState = Pair(false, seekSecs)
@@ -764,8 +905,7 @@ fun SmartVideoPlayerScreen(
                                                 )
                                             )
                                         }
-                                        offset.x > rightThird -> {
-                                            // Seek forward
+                                        startPos.x > rightThird -> {
                                             val newPos = (exoPlayer.currentPosition + seekSecs * 1000L).coerceAtMost(duration)
                                             exoPlayer.seekTo(newPos)
                                             doubleTapSeekState = Pair(true, seekSecs)
@@ -779,7 +919,6 @@ fun SmartVideoPlayerScreen(
                                             )
                                         }
                                         else -> {
-                                            // Center double tap toggles play/pause
                                             viewModel.togglePlayPause()
                                             triggerOsd(
                                                 OsdState(
@@ -789,124 +928,18 @@ fun SmartVideoPlayerScreen(
                                             )
                                         }
                                     }
-                                },
-                                onLongPress = {
-                                    if (!isLongPressFastForward) {
-                                        isLongPressFastForward = true
-                                        speedBeforeLongPress = playbackSpeed
-                                        viewModel.setSpeed(2.0f)
-                                        triggerOsd(
-                                            OsdState(
-                                                icon = Icons.Default.Speed,
-                                                title = "2.0x Fast Forward",
-                                                valueText = "Speed Boost"
-                                            ),
-                                            durationMs = 3000L
-                                        )
-                                    }
-                                },
-                                onPress = {
-                                    // Await release to restore speed if long pressing
-                                    val released = tryAwaitRelease()
-                                    if (released && isLongPressFastForward) {
-                                        isLongPressFastForward = false
-                                        viewModel.setSpeed(speedBeforeLongPress)
-                                        triggerOsd(
-                                            OsdState(
-                                                icon = Icons.Default.Speed,
-                                                title = "${String.format(Locale.US, "%.1f", speedBeforeLongPress)}x",
-                                                valueText = "Speed Restored"
-                                            )
-                                        )
+                                } else {
+                                    lastTapTime = downTime
+                                    lastTapPos = startPos
+                                    singleTapJob = scope.launch {
+                                        delay(300L)
+                                        viewModel.toggleControls()
                                     }
                                 }
-                            )
+                            }
                         }
-                )
-
-                // Pointer Input 3: Drag gestures (Vertical Brightness/Volume & Horizontal Seek)
-                var dragStartX by remember { mutableFloatStateOf(0f) }
-                var totalDragX by remember { mutableFloatStateOf(0f) }
-                var totalDragY by remember { mutableFloatStateOf(0f) }
-                var isHorizontalDrag by remember { mutableStateOf<Boolean?>(null) }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(containerSize, screenLocked) {
-                            detectDragGestures(
-                                onDragStart = { offset ->
-                                    dragStartX = offset.x
-                                    totalDragX = 0f
-                                    totalDragY = 0f
-                                    isHorizontalDrag = null
-                                    seekPreviewMs = currentPosition
-                                    activeGesture = ActiveGesture.NONE
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    totalDragX += dragAmount.x
-                                    totalDragY += dragAmount.y
-
-                                    // Determine drag direction lock
-                                    if (isHorizontalDrag == null) {
-                                        if (abs(totalDragX) > 20f && abs(totalDragX) > abs(totalDragY)) {
-                                            isHorizontalDrag = true
-                                            activeGesture = ActiveGesture.SEEK
-                                        } else if (abs(totalDragY) > 20f && abs(totalDragY) > abs(totalDragX)) {
-                                            isHorizontalDrag = false
-                                            activeGesture = if (dragStartX < screenWidthPx / 2f) ActiveGesture.BRIGHTNESS else ActiveGesture.VOLUME
-                                        }
-                                    }
-
-                                    when (isHorizontalDrag) {
-                                        true -> {
-                                            activeGesture = ActiveGesture.SEEK
-                                            val dur = duration.coerceAtLeast(1L)
-                                            val seekFraction = totalDragX / screenWidthPx
-                                            val deltaMs = (seekFraction * 90_000L).toLong() // up to 90s scrub range
-                                            val target = (currentPosition + deltaMs).coerceIn(0L, dur)
-                                            seekPreviewMs = target
-                                            seekDeltaMs = deltaMs
-                                        }
-                                        false -> {
-                                            val deltaFraction = -dragAmount.y / screenHeightPx
-
-                                            if (dragStartX < screenWidthPx / 2f) {
-                                                // Brightness
-                                                activeGesture = ActiveGesture.BRIGHTNESS
-                                                localBrightness = (localBrightness + deltaFraction * 1.5f).coerceIn(0.01f, 1.0f)
-                                                setWindowBrightness(activity, localBrightness)
-                                            } else {
-                                                // Volume
-                                                activeGesture = ActiveGesture.VOLUME
-                                                val currentVolPct = volumeBoostPercent
-                                                val newVolPct = (currentVolPct + deltaFraction * 150f).coerceIn(0f, 200f)
-                                                if (newVolPct > currentVolPct) {
-                                                    viewModel.increaseVolume()
-                                                } else {
-                                                    viewModel.decreaseVolume()
-                                                }
-                                            }
-                                        }
-                                        null -> {}
-                                    }
-                                },
-                                onDragEnd = {
-                                    if (isHorizontalDrag == true) {
-                                        exoPlayer.seekTo(seekPreviewMs)
-                                    }
-                                    isHorizontalDrag = null
-                                    activeGesture = ActiveGesture.NONE
-                                },
-                                onDragCancel = {
-                                    isHorizontalDrag = null
-                                    activeGesture = ActiveGesture.NONE
-                                }
-                            )
-                        }
-                )
-            }
+                    }
+            )
         }
 
         // â”€â”€ 4. DOUBLE-TAP SEEK RIPPLE OSD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1204,6 +1237,13 @@ fun SmartVideoPlayerScreen(
                             )
                         )
                     )
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                viewModel.toggleControls()
+                            }
+                        )
+                    }
             ) {
                 // ── GLASSMORPHIC TOP APP BAR ─────────────────────────────────────
                 Row(
@@ -1325,7 +1365,10 @@ fun SmartVideoPlayerScreen(
                 ) {
                     // Previous Track
                     IconButton(
-                        onClick = { viewModel.playPrevious() },
+                        onClick = {
+                            viewModel.playPrevious()
+                            viewModel.scheduleControlsHide()
+                        },
                         modifier = Modifier.size(52.dp)
                     ) {
                         Icon(
@@ -1341,6 +1384,7 @@ fun SmartVideoPlayerScreen(
                         onClick = {
                             val newPos = (currentPosition - appSettings.doubleTapSeekSecs * 1000L).coerceAtLeast(0L)
                             exoPlayer.seekTo(newPos)
+                            viewModel.scheduleControlsHide()
                         },
                         modifier = Modifier.size(56.dp)
                     ) {
@@ -1354,7 +1398,10 @@ fun SmartVideoPlayerScreen(
 
                     // Play / Pause FAB
                     FloatingActionButton(
-                        onClick = { viewModel.togglePlayPause() },
+                        onClick = {
+                            viewModel.togglePlayPause()
+                            viewModel.scheduleControlsHide()
+                        },
                         shape = CircleShape,
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -1373,6 +1420,7 @@ fun SmartVideoPlayerScreen(
                         onClick = {
                             val newPos = (currentPosition + appSettings.doubleTapSeekSecs * 1000L).coerceAtMost(duration)
                             exoPlayer.seekTo(newPos)
+                            viewModel.scheduleControlsHide()
                         },
                         modifier = Modifier.size(56.dp)
                     ) {
@@ -1386,7 +1434,10 @@ fun SmartVideoPlayerScreen(
 
                     // Next Track
                     IconButton(
-                        onClick = { viewModel.playNext() },
+                        onClick = {
+                            viewModel.playNext()
+                            viewModel.scheduleControlsHide()
+                        },
                         modifier = Modifier.size(52.dp)
                     ) {
                         Icon(
@@ -1502,6 +1553,7 @@ fun SmartVideoPlayerScreen(
                             bookmarks = currentBookmarks,
                             onSeek = { targetMs ->
                                 viewModel.seekTo(targetMs)
+                                viewModel.scheduleControlsHide()
                             }
                         )
 
@@ -1520,6 +1572,7 @@ fun SmartVideoPlayerScreen(
                                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
                                 modifier = Modifier.clickable {
                                     viewModel.cycleAspectRatio()
+                                    viewModel.scheduleControlsHide()
                                     triggerOsd(
                                         OsdState(
                                             icon = Icons.Default.AspectRatio,
