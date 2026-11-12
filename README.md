@@ -20,8 +20,8 @@ Download the production-ready APK using any of the direct download options below
 ### 🛡️ Build Verification Details
 - **Version**: `2.0.0` (versionCode `2`)
 - **Filename**: `app-arm64-v8a-release.apk`
-- **File Size**: `101,800,672 bytes` (~97.08 MB)
-- **SHA-256 Checksum**: `e076f8d5c7d13a085faf857bece2cba8958ea578f970f037d7267d90af2aae7f`
+- **File Size**: `101,803,908 bytes` (~97.08 MB)
+- **SHA-256 Checksum**: `bb2cdde48e9a494ab451185eb57b39a385917760cee20e9da0d87c0d4edee0c8`
 - **Architecture**: `arm64-v8a` (Android 8.0+ / API 26–35)
 
 ---
@@ -48,6 +48,7 @@ Download the production-ready APK using any of the direct download options below
 - Manual user override persistence (`isUserOverridden`) prevents automated re-classification.
 
 ### 2. ⚡ High-Speed Universal Downloader
+- **Thread-Safe Initialization State Machine**: Mutex-guarded engine lifecycle (`NotStarted`, `Initializing`, `Ready`, `Failed`) with automatic lazy initialization, non-blocking background pre-warming, and retryable `EngineNotReady` recovery with a 1-tap UI retry action.
 - **Scoped Storage Compliant**: Stages downloads in app-private cache before streaming into public `Movies/SmartGallery` or `Music/SmartGallery` via `ContentResolver` and `IS_PENDING`.
 - **Full Format & Quality Selectors**:
   - Video resolutions: `4K (2160p)`, `1440p`, `1080p`, `720p`, `480p`
@@ -55,7 +56,7 @@ Download the production-ready APK using any of the direct download options below
   - Audio extraction: `MP3` & `M4A` at `320 kbps`, `192 kbps`, `128 kbps`
 - **Multi-Connection Aria2c Acceleration** with resume flag (`-c`).
 - **Resilient Fallback Chains**: Automatically falls back to `best/bestvideo+bestaudio` if preferred stream format fails.
-- **Typed Error Classification**: Categorizes errors into `Network`, `StorageFull`, `FormatNotFound`, `UnsupportedSite`, `Unavailable`, and `Cancelled`, with 1-tap retry for retryable failures.
+- **Typed Error Classification**: Categorizes errors into `EngineNotReady`, `Network`, `StorageFull`, `FormatNotFound`, `UnsupportedSite`, `Unavailable`, `Cancelled`, and `Unknown`, with 1-tap retry for retryable failures.
 - **Legal Notice**: Compliance disclaimer banner reminding users to adhere to source site Terms of Service and applicable copyright laws.
 
 ### 3. 🧵 Concurrent Multi-Task AI Orchestrator

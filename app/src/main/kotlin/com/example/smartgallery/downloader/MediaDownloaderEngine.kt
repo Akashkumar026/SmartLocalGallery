@@ -16,61 +16,119 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
-import com.yausername.ffmpeg.FFmpeg
-import com.yausername.aria2c.Aria2c
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * State machine representing the initialization lifecycle of the embedded download engine.
+ */
+sealed class EngineInitState {
+    object NotStarted : EngineInitState()
+    object Initializing : EngineInitState()
+    object Ready : EngineInitState()
+    data class Failed(val error: Throwable) : EngineInitState()
+}
 
 @Singleton
 class MediaDownloaderEngine @Inject constructor(
     @ApplicationContext private val context: Context,
     private val db: GalleryDatabase,
     private val settings: SettingsRepository,
-    private val profiler: DeviceCapabilityProfiler
+    private val profiler: DeviceCapabilityProfiler,
+    private val nativeInitializer: NativeEngineInitializer
 ) {
     private val initMutex = Mutex()
-    @Volatile private var isYtdlReady = false
-    @Volatile private var isFfmpegReady = false
-    @Volatile private var isAria2cReady = false
 
-    suspend fun ensureInitialized(ctx: Context = context) = initMutex.withLock {
-        val appCtx = ctx.applicationContext
-        if (!isYtdlReady) {
-            try {
-                YoutubeDL.getInstance().init(appCtx)
-                isYtdlReady = true
-                Log.d(TAG, "YoutubeDL engine initialized successfully via Mutex.")
-            } catch (t: Throwable) {
-                Log.e(TAG, "Failed initializing YoutubeDL: ${t.message}", t)
+    @Volatile
+    var engineState: EngineInitState = EngineInitState.NotStarted
+        private set
+
+    val isReady: Boolean
+        get() = engineState is EngineInitState.Ready
+
+    /**
+     * Thread-safe, Mutex-guarded initialization of YoutubeDL, FFmpeg, and Aria2c.
+     * Retries initialization on the next invocation if the previous attempt failed.
+     * Never swallows exceptions: all failures are recorded in [EngineInitState.Failed],
+     * logged with tag 'Downloader', and returned as Result.failure.
+     */
+    suspend fun ensureReady(ctx: Context = context): Result<Unit> = initMutex.withLock {
+        when (val current = engineState) {
+            is EngineInitState.Ready -> return Result.success(Unit)
+            is EngineInitState.Initializing -> {
+                // If currently initializing in another coroutine, the Mutex forces sequential evaluation.
+            }
+            is EngineInitState.NotStarted, is EngineInitState.Failed -> {
+                // Proceed with fresh initialization attempt or retry.
             }
         }
-        if (!isFfmpegReady) {
-            runCatching {
-                FFmpeg.getInstance().init(appCtx)
-                isFfmpegReady = true
-                Log.d(TAG, "FFmpeg engine initialized successfully via Mutex.")
-            }.onFailure { Log.w(TAG, "FFmpeg init notice: ${it.message}") }
+
+        engineState = EngineInitState.Initializing
+        val appCtx = ctx.applicationContext
+        return try {
+            nativeInitializer.initYoutubeDL(appCtx)
+            runCatching { nativeInitializer.initFFmpeg(appCtx) }.onFailure {
+                Log.w(TAG, "FFmpeg initialization notice: ${it.message}")
+            }
+            runCatching { nativeInitializer.initAria2c(appCtx) }.onFailure {
+                Log.w(TAG, "Aria2c initialization notice: ${it.message}")
+            }
+            engineState = EngineInitState.Ready
+            Log.i(TAG, "All embedded downloader engines initialized successfully via Mutex.")
+            Result.success(Unit)
+        } catch (t: Throwable) {
+            engineState = EngineInitState.Failed(t)
+            Log.e(TAG, "Failed initializing downloader engines: ${t.message}", t)
+            Result.failure(t)
         }
-        if (!isAria2cReady) {
-            runCatching {
-                Aria2c.getInstance().init(appCtx)
-                isAria2cReady = true
-                Log.d(TAG, "Aria2c engine initialized successfully via Mutex.")
-            }.onFailure { Log.w(TAG, "Aria2c init notice: ${it.message}") }
+    }
+
+    /**
+     * Backward-compatible helper that throws if engine initialization fails.
+     */
+    suspend fun ensureInitialized(ctx: Context = context) {
+        val res = ensureReady(ctx)
+        if (res.isFailure) {
+            throw res.exceptionOrNull() ?: IllegalStateException("Downloader engine initialization failed")
+        }
+    }
+
+    /**
+     * Asynchronously triggers non-blocking background check for yt-dlp binary updates.
+     * Runs in a detached coroutine and never blocks [ensureReady] or active downloads.
+     */
+    fun scheduleBackgroundYtdlUpdate(appContext: Context) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val ready = ensureReady(appContext)
+                if (ready.isSuccess) {
+                    Log.i(TAG, "Starting non-blocking background yt-dlp update...")
+                    val status = YoutubeDL.getInstance().updateYoutubeDL(appContext, YoutubeDL.UpdateChannel.STABLE)
+                    Log.i(TAG, "Background yt-dlp update status: $status")
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Background yt-dlp update notice: ${t.message}")
+            }
         }
     }
 
     companion object {
-        private const val TAG = "MediaDownloaderEngine"
+        const val TAG = "Downloader"
+
+        /**
+         * Sanitizes URLs before logging to avoid logging sensitive query parameters.
+         */
+        fun sanitizeUrlForLog(url: String): String = url.substringBefore("?")
 
         /**
          * 64-bit Long millisecond formatter supporting 90+ hour marathon videos (HHH:MM:SS).
@@ -162,6 +220,7 @@ class MediaDownloaderEngine @Inject constructor(
             throw SecurityException("Strict Offline Lockdown is active. Network requests are completely blocked.")
         }
 
+        Log.d(TAG, "Fetching media info for: ${sanitizeUrlForLog(url)}")
         val info = YoutubeDL.getInstance().getInfo(url)
         val isInsta = url.contains("instagram.com", ignoreCase = true)
         val durationSeconds = info.duration.toLong()

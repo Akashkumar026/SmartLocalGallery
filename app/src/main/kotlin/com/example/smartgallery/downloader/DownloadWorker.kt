@@ -36,10 +36,20 @@ class DownloadWorker @AssistedInject constructor(
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        downloaderEngine.ensureInitialized(appContext)
-
         val taskId = inputData.getLong(KEY_TASK_ID, -1L)
         if (taskId == -1L) return@withContext Result.failure()
+
+        val readyResult = downloaderEngine.ensureReady(appContext)
+        if (readyResult.isFailure) {
+            val err = readyResult.exceptionOrNull() ?: IllegalStateException("Downloader engine not ready")
+            android.util.Log.e("Downloader", "DownloadWorker failed: Engine not ready: ${err.message}", err)
+            val typedError = DownloadError.fromThrowable(err)
+            val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"
+            db.downloadTaskDao().updateStatus(taskId, "FAILED", null, errorMsg)
+            val notifId = (NOTIFICATION_ID_BASE + (taskId % 1000)).toInt()
+            showFailureNotification("Downloader Engine Error", typedError.message, notifId)
+            return@withContext Result.failure()
+        }
 
         val task = db.downloadTaskDao().getByIdSync(taskId) ?: return@withContext Result.failure()
 
@@ -47,7 +57,7 @@ class DownloadWorker @AssistedInject constructor(
         try {
             setForeground(createForegroundInfo(task.title, 0, notifId))
         } catch (t: Throwable) {
-            android.util.Log.w("DownloadWorker", "Could not elevate to foreground service: ${t.message}")
+            android.util.Log.w("Downloader", "Could not elevate to foreground service: ${t.message}")
         }
 
         db.downloadTaskDao().updateStatus(taskId, "DOWNLOADING", null, null)
@@ -110,12 +120,14 @@ class DownloadWorker @AssistedInject constructor(
             showCompletionNotification(task.title, notifId)
             Result.success()
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("Downloader", "DownloadWorker execution failed for task $taskId: ${e.message}", e)
             val typedError = DownloadError.fromThrowable(e)
             val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"
             db.downloadTaskDao().updateStatus(taskId, "FAILED", null, errorMsg)
             if (typedError is DownloadError.StorageFull) {
                 showFailureNotification("Low Storage Space", typedError.message, notifId)
+            } else if (typedError is DownloadError.EngineNotReady) {
+                showFailureNotification("Downloader Engine Error", typedError.message, notifId)
             } else {
                 showFailureNotification(task.title, typedError.message, notifId)
             }

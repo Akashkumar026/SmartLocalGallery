@@ -1,6 +1,7 @@
 package com.example.smartgallery.downloader
 
 sealed class DownloadError(open val message: String, val isRetryable: Boolean) {
+    data class EngineNotReady(override val message: String, val cause: Throwable? = null) : DownloadError(message, isRetryable = true)
     data class Network(override val message: String) : DownloadError(message, isRetryable = true)
     data class Unavailable(override val message: String) : DownloadError(message, isRetryable = false)
     data class FormatNotFound(override val message: String) : DownloadError(message, isRetryable = true)
@@ -13,6 +14,13 @@ sealed class DownloadError(open val message: String, val isRetryable: Boolean) {
         fun fromThrowable(t: Throwable): DownloadError {
             val msg = t.message ?: t.localizedMessage ?: "Unknown error"
             return when {
+                msg.contains("instance not initialized", ignoreCase = true) ||
+                msg.contains("failed to initialize", ignoreCase = true) ||
+                msg.contains("Downloader engine", ignoreCase = true) ||
+                (msg.contains("YoutubeDL", ignoreCase = true) && msg.contains("not initialized", ignoreCase = true)) ||
+                (t is IllegalStateException && msg.contains("not initialized", ignoreCase = true)) ->
+                    EngineNotReady(msg, t)
+
                 msg.contains("Low Storage Space", ignoreCase = true) ||
                 msg.contains("ENOSPC", ignoreCase = true) ||
                 msg.contains("No space left", ignoreCase = true) ||
@@ -60,6 +68,8 @@ sealed class DownloadError(open val message: String, val isRetryable: Boolean) {
         fun fromString(errorStr: String?): DownloadError {
             if (errorStr.isNullOrBlank()) return Unknown("Unknown error")
             return when {
+                errorStr.startsWith("EngineNotReady:", ignoreCase = true) ->
+                    EngineNotReady(errorStr.substringAfter(":").trim())
                 errorStr.startsWith("Network:", ignoreCase = true) ->
                     Network(errorStr.substringAfter(":").trim())
                 errorStr.startsWith("StorageFull:", ignoreCase = true) ->
@@ -77,4 +87,3 @@ sealed class DownloadError(open val message: String, val isRetryable: Boolean) {
         }
     }
 }
-

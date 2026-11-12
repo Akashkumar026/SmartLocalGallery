@@ -173,12 +173,18 @@ class SmartGalleryApp : Application(), Configuration.Provider, SingletonImageLoa
     }
 
     private fun initEmbeddedDownloaderBinaries() {
-        applicationScope.launch {
+        applicationScope.launch(Dispatchers.IO) {
             try {
-                downloaderEngine.get().ensureInitialized(applicationContext)
-                Log.d(TAG, "Embedded downloader engines initialized successfully via MediaDownloaderEngine.")
+                downloaderEngine.get().ensureReady(applicationContext).fold(
+                    onSuccess = {
+                        Log.i("Downloader", "Embedded downloader engines initialized successfully via MediaDownloaderEngine.")
+                    },
+                    onFailure = { t ->
+                        Log.w("Downloader", "Background pre-warm of downloader engines notice: ${t.message}", t)
+                    }
+                )
             } catch (t: Throwable) {
-                Log.w(TAG, "Background pre-warm of downloader engines notice: ${t.message}")
+                Log.w("Downloader", "Background pre-warm exception: ${t.message}", t)
             }
         }
     }

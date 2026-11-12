@@ -1,10 +1,45 @@
 package com.example.smartgallery.downloader
 
 import com.google.common.truth.Truth.assertThat
+import com.yausername.youtubedl_android.YoutubeDLException
 import org.junit.Test
 import java.io.IOException
 
 class DownloadErrorTest {
+
+    @Test
+    fun testParse_instanceNotInitialized_illegalStateException() {
+        val ex = IllegalStateException("instance not initialized")
+        val error = DownloadError.fromThrowable(ex)
+        assertThat(error).isInstanceOf(DownloadError.EngineNotReady::class.java)
+        assertThat(error.isRetryable).isTrue()
+        assertThat(error.message).contains("instance not initialized")
+    }
+
+    @Test
+    fun testParse_instanceNotInitialized_youtubeDLException() {
+        val ex = YoutubeDLException("instance not initialized")
+        val error = DownloadError.fromThrowable(ex)
+        assertThat(error).isInstanceOf(DownloadError.EngineNotReady::class.java)
+        assertThat(error.isRetryable).isTrue()
+    }
+
+    @Test
+    fun testParse_failedToInitialize_youtubeDLException() {
+        val ex = YoutubeDLException("failed to initialize", IOException("missing libpython.zip.so"))
+        val error = DownloadError.fromThrowable(ex)
+        assertThat(error).isInstanceOf(DownloadError.EngineNotReady::class.java)
+        assertThat(error.isRetryable).isTrue()
+    }
+
+    @Test
+    fun testFromString_engineNotReady() {
+        val serialized = "EngineNotReady: Downloader engine not ready"
+        val error = DownloadError.fromString(serialized)
+        assertThat(error).isInstanceOf(DownloadError.EngineNotReady::class.java)
+        assertThat(error.message).isEqualTo("Downloader engine not ready")
+        assertThat(error.isRetryable).isTrue()
+    }
 
     @Test
     fun testParse_storageFull() {
@@ -62,4 +97,3 @@ class DownloadErrorTest {
         assertThat(error.message).contains("Socket closed unexpectedly")
     }
 }
-

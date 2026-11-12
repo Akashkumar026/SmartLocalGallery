@@ -81,6 +81,26 @@ class DownloaderViewModel @Inject constructor(
     var clipStartTime by mutableStateOf("00:00:00")
     var clipEndTime by mutableStateOf("00:10:00")
     var errorMessage by mutableStateOf<String?>(null)
+    var engineError by mutableStateOf<DownloadError.EngineNotReady?>(null)
+
+    fun retryEngineInit() {
+        viewModelScope.launch {
+            android.util.Log.i("Downloader", "UI triggered retry of downloader engine initialization")
+            engine.ensureReady(context).fold(
+                onSuccess = {
+                    android.util.Log.i("Downloader", "Downloader engine successfully initialized on UI retry.")
+                    engineError = null
+                    errorMessage = null
+                },
+                onFailure = { t ->
+                    android.util.Log.e("Downloader", "Downloader engine initialization failed on UI retry: ${t.message}", t)
+                    val typed = DownloadError.fromThrowable(t)
+                    engineError = if (typed is DownloadError.EngineNotReady) typed else DownloadError.EngineNotReady(typed.message, t)
+                    errorMessage = typed.message
+                }
+            )
+        }
+    }
 
     fun inspectUrl(targetUrl: String = urlInput) {
         val cleanUrl = targetUrl.trim()
@@ -88,14 +108,31 @@ class DownloaderViewModel @Inject constructor(
         urlInput = cleanUrl
         isInspecting = true
         errorMessage = null
+        engineError = null
 
         viewModelScope.launch {
             try {
+                val readyRes = engine.ensureReady(context)
+                if (readyRes.isFailure) {
+                    val t = readyRes.exceptionOrNull() ?: IllegalStateException("Downloader engine is not initialized")
+                    android.util.Log.e("Downloader", "Inspect aborted: Downloader engine not ready: ${t.message}", t)
+                    val typed = DownloadError.fromThrowable(t)
+                    if (typed is DownloadError.EngineNotReady) {
+                        engineError = typed
+                    }
+                    errorMessage = typed.message
+                    return@launch
+                }
                 val info = engine.fetchMediaInfo(cleanUrl)
                 mediaInfo = info
                 clipEndTime = MediaDownloaderEngine.formatDurationHms(info.durationMs)
             } catch (e: Exception) {
-                errorMessage = e.message ?: "Failed to fetch media metadata"
+                android.util.Log.e("Downloader", "Inspect media URL failed: ${e.message}", e)
+                val typed = DownloadError.fromThrowable(e)
+                if (typed is DownloadError.EngineNotReady) {
+                    engineError = typed
+                }
+                errorMessage = typed.message
             } finally {
                 isInspecting = false
             }
@@ -105,6 +142,18 @@ class DownloaderViewModel @Inject constructor(
     fun startDownload() {
         val info = mediaInfo ?: return
         viewModelScope.launch {
+            val readyRes = engine.ensureReady(context)
+            if (readyRes.isFailure) {
+                val t = readyRes.exceptionOrNull() ?: IllegalStateException("Downloader engine is not initialized")
+                android.util.Log.e("Downloader", "Start download aborted: Engine not ready: ${t.message}", t)
+                val typed = DownloadError.fromThrowable(t)
+                if (typed is DownloadError.EngineNotReady) {
+                    engineError = typed
+                }
+                errorMessage = typed.message
+                return@launch
+            }
+
             val clipStartMs = if (isClipMode) MediaDownloaderEngine.parseHmsToMs(clipStartTime) else 0L
             val clipEndMs = if (isClipMode) MediaDownloaderEngine.parseHmsToMs(clipEndTime) else 0L
 
@@ -379,17 +428,70 @@ fun DownloaderScreen(
                 }
             }
 
-            // Error display
-            viewModel.errorMessage?.let { error ->
+            // Engine initialization error with dedicated retry action
+            viewModel.engineError?.let { engErr ->
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                            Spacer(Modifier.width(8.dp))
-                            Text(error, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        Icons.Default.ErrorOutline,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "Downloader Engine Not Ready",
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                                FilledTonalButton(
+                                    onClick = { viewModel.retryEngineInit() },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = "Retry engine setup", modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Retry engine setup", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = engErr.message,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            // General error display (shown only when no specific engineError is active)
+            if (viewModel.engineError == null) {
+                viewModel.errorMessage?.let { error ->
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.width(8.dp))
+                                Text(error, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
                 }
@@ -660,6 +762,7 @@ fun DownloaderScreen(
                             if (task.status == "FAILED" && !task.errorMsg.isNullOrBlank()) {
                                 val typedError = DownloadError.fromString(task.errorMsg)
                                 val categoryLabel = when (typedError) {
+                                    is DownloadError.EngineNotReady -> "Engine Not Ready"
                                     is DownloadError.Network -> "Network Error"
                                     is DownloadError.StorageFull -> "Storage Full"
                                     is DownloadError.FormatNotFound -> "Format Unavailable"
