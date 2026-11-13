@@ -16,7 +16,7 @@ A full architectural audit, security overhaul, feature completion, and verificat
 - **Unit Test Suite**: `./gradlew testReleaseUnitTest` **100% PASSING (36/36 tests)**
 - **Release Verification**: Custom Gradle task `verifyRelease` active
 - **CI Automation**: GitHub Actions workflow `.github/workflows/android-ci.yml` deployed
-- **Release APK SHA-256**: `0b189d0a813a0adca0ad357e9a081f0247212a1b6997feed58985dff14d57c7f`
+- **Release APK SHA-256**: `6281ad1920ca05beed278692d6c483f3051fdd79085186a5a7e0ac757abfb320`
 
 ---
 
@@ -54,5 +54,5 @@ Because the current execution environment does not have a physical arm64 device 
 | 3 | Cancel mid-download | **Pending Device** | Cancellation mechanism verified in unit tests and code: `YoutubeDL.destroyProcessById("download_$taskId")` cleans staging directory. |
 | 4 | Turn off Wi-Fi mid-download, turn it on | **Pending Device** | Mapped to typed `DownloadError.Network` with `isRetryable = true`. UI offers 1-tap retry button calling `resumeDownload(task)`. |
 | 5 | Force-stop app, reopen, download | **Pending Device** | Code verified: `SmartGalleryApp.onCreate()` pre-warms `ensureReady()` on background thread, and `ensureReady()` is lazily awaited before any download. Instrumented test `ColdProcessRelaunchInstrumentedTest` written. |
-| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`102,882,117 bytes`, SHA-256 `0b189d0a813a0adca0ad357e9a081f0247212a1b6997feed58985dff14d57c7f`) with updated yt-dlp `2026.10.26` binary preserved and synced, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson mapper classes. |
+| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`102,882,609 bytes`, SHA-256 `6281ad1920ca05beed278692d6c483f3051fdd79085186a5a7e0ac757abfb320`) with updated yt-dlp `2026.10.26` binary preserved and synced, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson mapper classes. |
 | 7 | Invalid URL | **Unit Verified** | Unit tests confirm `DownloadError.UnsupportedSite` and `DownloadError.Unavailable` mapped without throwing unhandled exceptions. |

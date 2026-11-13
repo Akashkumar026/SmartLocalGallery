@@ -765,7 +765,7 @@ fun SmartVideoPlayerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(screenLocked, containerSize, configuration.orientation) {
+                    .pointerInput(screenLocked) {
                         val touchSlop = viewConfiguration.touchSlop
                         var lastTapTime = 0L
                         var lastTapPos = Offset.Zero
@@ -775,8 +775,8 @@ fun SmartVideoPlayerScreen(
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val downTime = System.currentTimeMillis()
                             val startPos = down.position
-                            val screenWidth = if (containerSize.width > 0) containerSize.width.toFloat() else size.width.toFloat()
-                            val screenHeight = if (containerSize.height > 0) containerSize.height.toFloat() else size.height.toFloat()
+                            val screenWidth = size.width.toFloat()
+                            val screenHeight = size.height.toFloat()
 
                             var isMultiTouch = false
                             var isDrag = false
@@ -967,10 +967,8 @@ fun SmartVideoPlayerScreen(
                                     lastTapTime = downTime
                                     lastTapPos = startPos
                                     singleTapJob = scope.launch {
-                                        delay(300L)
-                                        if (!showControls) {
-                                            viewModel.showControlsTemporarily(3500L)
-                                        }
+                                        delay(250L)
+                                        viewModel.toggleControls()
                                     }
                                 }
                             }
@@ -1274,7 +1272,7 @@ fun SmartVideoPlayerScreen(
                             )
                         )
                     )
-                    .pointerInput(containerSize, configuration.orientation) {
+                    .pointerInput(Unit) {
                         detectTapGestures(
                             onTap = {
                                 viewModel.hideControls()
