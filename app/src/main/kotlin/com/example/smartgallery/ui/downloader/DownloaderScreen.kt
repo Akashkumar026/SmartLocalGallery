@@ -88,13 +88,17 @@ class DownloaderViewModel @Inject constructor(
     fun updateEngine() {
         if (isUpdatingEngine) return
         isUpdatingEngine = true
-        engineStatusMessage = "Checking for yt-dlp binary updates..."
+        engineStatusMessage = "Downloading latest yt-dlp binary update..."
         viewModelScope.launch {
             engine.updateYtdlBinary(context).fold(
                 onSuccess = { msg ->
                     android.util.Log.i("Downloader", "Manual engine update success: $msg")
                     engineStatusMessage = msg
                     engineError = null
+                    errorMessage = null
+                    if (urlInput.isNotBlank()) {
+                        inspectUrl(urlInput)
+                    }
                 },
                 onFailure = { t ->
                     android.util.Log.e("Downloader", "Manual engine update failed: ${t.message}", t)

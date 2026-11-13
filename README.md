@@ -20,8 +20,8 @@ Download the production-ready APK using any of the direct download options below
 ### 🛡️ Build Verification Details
 - **Version**: `2.0.0` (versionCode `2`)
 - **Filename**: `app-arm64-v8a-release.apk`
-- **File Size**: `102,792,737 bytes` (~98.03 MB)
-- **SHA-256 Checksum**: `a38a17924847cbb548d571aaea3f17b712d9689d4bd3c17a928291fcf4895144`
+- **File Size**: `102,882,117 bytes` (~98.12 MB)
+- **SHA-256 Checksum**: `0b189d0a813a0adca0ad357e9a081f0247212a1b6997feed58985dff14d57c7f`
 - **Architecture**: `arm64-v8a` (Android 8.0+ / API 26–35)
 
 ---

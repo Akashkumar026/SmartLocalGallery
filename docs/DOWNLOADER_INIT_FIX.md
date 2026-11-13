@@ -182,7 +182,7 @@ Per Ground Rule 5:
 | 3 | Cancel mid-download | **Pending Device** | `cancelProcess(taskId)` invokes `destroyProcessById("download_$taskId")` and deletes cache staging. |
 | 4 | Turn off Wi-Fi mid-download, turn it on | **Pending Device** | Mapped to `DownloadError.Network` (`isRetryable = true`) with UI 1-tap retry button. |
 | 5 | Force-stop app, reopen, download | **Pending Device** | `SmartGalleryApp.onCreate()` pre-warms on background thread, `ensureReady()` awaited by UI. Simulated via `ColdProcessRelaunchInstrumentedTest`. |
-| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`102,792,737 bytes`, SHA-256 `a38a17924847cbb548d571aaea3f17b712d9689d4bd3c17a928291fcf4895144`) with `res/raw/ytdlp` preserved, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson. |
+| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`102,882,117 bytes`, SHA-256 `0b189d0a813a0adca0ad357e9a081f0247212a1b6997feed58985dff14d57c7f`) with updated yt-dlp `2026.10.26` binary preserved and synced, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson. |
 | 7 | Invalid URL | **Unit Verified** | Unit tests confirm `DownloadError.UnsupportedSite` and `DownloadError.Unavailable` mapped without throwing unhandled exceptions. |
 
 ---
@@ -190,24 +190,26 @@ Per Ground Rule 5:
 ## 7. Release Artifacts
 
 - **APK File**: `release/app-arm64-v8a-release.apk`
-- **File Size**: `102,792,737 bytes` (~98.03 MB)
-- **SHA-256 Checksum**: `a38a17924847cbb548d571aaea3f17b712d9689d4bd3c17a928291fcf4895144`
+- **File Size**: `102,882,117 bytes` (~98.12 MB)
+- **SHA-256 Checksum**: `0b189d0a813a0adca0ad357e9a081f0247212a1b6997feed58985dff14d57c7f`
 - **Verification Task**: `./gradlew verifyRelease` -> `Checksum verification SUCCESS: Matches release-checksum.txt`
 
 ---
 
-## 8. Secondary Root Cause: Resource Shrinking & AGP Stripping of `res/raw/ytdlp`
+## 8. Secondary Root Causes & Architectural Fixes
 
-During release testing, a secondary fatal failure was discovered:
-1. `app/build.gradle.kts` had `isShrinkResources = true` enabled for release builds.
-2. In release APK builds, AGP analyzed code references. Because `YoutubeDL.init()` accessed `res/raw/ytdlp` via internal reflection or library R classes rather than a direct reference from the main module, AGP's resource shrinker stripped `res/raw/ytdlp` (reducing file size by ~2.98 MB).
-3. At runtime on device, `YoutubeDL.init(appCtx)` threw:
-   `android.content.res.Resources$NotFoundException: File res/raw/ytdlp from drawable resource ID #0x7f...`
-4. This prevented yt-dlp python extraction, leaving the engine uninitialized.
-5. **Fix Applied**:
-   - `isShrinkResources = false` set in `app/build.gradle.kts`.
-   - `keep.xml` created in `app/src/main/res/raw/keep.xml` marking `@raw/ytdlp` to be kept.
-   - `@Keep object DownloaderResourceKeeper` added to `NativeEngineInitializer.kt` referencing `R.raw.ytdlp`.
-   - `android.enableResourceOptimizations=false` added to `gradle.properties`.
-   - Comprehensive keep rules added to `app/proguard-rules.pro` for `com.fasterxml.jackson.**` and `com.yausername.youtubedl_android.mapper.**`.
-   - Packaging verified: `res/raw/ytdlp` (`2,985,408 bytes`) confirmed present inside release APK.
+### 8.1 Resource Shrinking Stripping `res/raw/ytdlp`
+In earlier release builds with `isShrinkResources = true`, AGP stripped `res/raw/ytdlp` because there was no static code reference to `com.yausername.youtubedl_android.R.raw.ytdlp` in main dex code.
+- Fixed by setting `isShrinkResources = false`, creating `keep.xml`, and declaring `@Keep object DownloaderResourceKeeper`.
+
+### 8.2 Outdated Bundled `yt-dlp` (2024.09.27) & Overwrite Guard on Device
+1. The AAR library bundled `yt-dlp` version `2024.09.27`.
+2. When the app was updated on a device that already had `youtubedl-android` initialized, `YoutubeDL.init_ytdlp()` contained a check:
+   `if (targetFile.exists()) return;`
+   which prevented updating the extracted binary on disk upon app update.
+3. Over time, YouTube updated its signature cipher (`n` signature function) and required PO tokens for android/web clients without updated JS extractors. This caused `Requested format is not available`.
+4. **Fix Applied**:
+   - Bundled the latest upstream `yt-dlp` binary (`2026.10.26`, `3,073,072 bytes`) into `app/src/main/res/raw/ytdlp`.
+   - In `NativeEngineInitializer.kt`, added `syncBundledYtdlBinary(context)` to automatically check the file length on disk and sync the latest bundled raw binary to `noBackupFilesDir/youtubedl-android/yt-dlp/yt-dlp` upon app start or update, calling `setExecutable(true, false)`.
+   - Removed `--extractor-args "youtube:player_client=android,web"` which failed on YouTube without PO tokens.
+   - Re-implemented `MediaDownloaderEngine.updateYtdlBinary()` to download directly with `User-Agent: SmartLocalGallery/2.0 (Android)` and follow 302 redirects, avoiding GitHub API 403 or dropped connections.

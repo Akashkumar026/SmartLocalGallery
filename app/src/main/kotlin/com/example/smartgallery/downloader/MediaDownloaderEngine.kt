@@ -63,7 +63,7 @@ class MediaDownloaderEngine @Inject constructor(
      * logged with tag 'Downloader', and returned as Result.failure.
      */
     suspend fun ensureReady(ctx: Context = context): Result<Unit> = initMutex.withLock {
-        when (val current = engineState) {
+        when (engineState) {
             is EngineInitState.Ready -> return Result.success(Unit)
             is EngineInitState.Initializing -> {
                 // If currently initializing in another coroutine, the Mutex forces sequential evaluation.
@@ -132,13 +132,56 @@ class MediaDownloaderEngine @Inject constructor(
         }
         try {
             Log.i(TAG, "Checking and updating yt-dlp binary from official release channel...")
-            val status = YoutubeDL.getInstance().updateYoutubeDL(ctx.applicationContext, YoutubeDL.UpdateChannel.STABLE)
-            val msg = when (status) {
-                YoutubeDL.UpdateStatus.DONE -> "Successfully updated yt-dlp to latest version"
-                YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp engine is already up to date"
-                null -> "yt-dlp update completed"
+            val appCtx = ctx.applicationContext
+            val ytdlpDir = File(appCtx.noBackupFilesDir, "youtubedl-android/yt-dlp")
+            val targetFile = File(ytdlpDir, "yt-dlp")
+            val tempFile = File.createTempFile("ytdlp_update", ".tmp", appCtx.cacheDir)
+
+            var currentUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+            var connection: java.net.HttpURLConnection
+            var redirects = 0
+            while (true) {
+                val u = java.net.URL(currentUrl)
+                connection = u.openConnection() as java.net.HttpURLConnection
+                connection.instanceFollowRedirects = false
+                connection.setRequestProperty("User-Agent", "SmartLocalGallery/2.0 (Android)")
+                connection.connectTimeout = 15000
+                connection.readTimeout = 30000
+                val code = connection.responseCode
+                if (code in 300..399) {
+                    val newLocation = connection.getHeaderField("Location")
+                    connection.disconnect()
+                    if (newLocation != null && redirects++ < 5) {
+                        currentUrl = newLocation
+                        continue
+                    }
+                }
+                if (code !in 200..299) {
+                    connection.disconnect()
+                    throw java.io.IOException("Server returned HTTP $code while fetching yt-dlp update")
+                }
+                break
             }
-            Log.i(TAG, "yt-dlp update result: $msg")
+
+            connection.inputStream.use { input ->
+                tempFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            connection.disconnect()
+
+            if (tempFile.length() < 1_000_000L) {
+                tempFile.delete()
+                throw java.io.IOException("Downloaded yt-dlp payload is suspiciously small (${tempFile.length()} bytes)")
+            }
+
+            if (!ytdlpDir.exists()) ytdlpDir.mkdirs()
+            tempFile.copyTo(targetFile, overwrite = true)
+            targetFile.setExecutable(true, false)
+            tempFile.delete()
+
+            val msg = "Successfully updated yt-dlp to latest version (${targetFile.length()} bytes)"
+            Log.i(TAG, msg)
             Result.success(msg)
         } catch (t: Throwable) {
             Log.e(TAG, "yt-dlp update failed: ${t.message}", t)
@@ -246,15 +289,11 @@ class MediaDownloaderEngine @Inject constructor(
 
         Log.d(TAG, "Fetching media info for: ${sanitizeUrlForLog(url)}")
         val isInsta = url.contains("instagram.com", ignoreCase = true)
-        val isYouTube = url.contains("youtube.com", ignoreCase = true) || url.contains("youtu.be", ignoreCase = true)
 
         val request = YoutubeDLRequest(url)
         request.addOption("--dump-json")
         request.addOption("--no-check-certificates")
         request.addOption("--no-cache-dir")
-        if (isYouTube) {
-            request.addOption("--extractor-args", "youtube:player_client=android,web")
-        }
         if (appSettings.cookiesTxtContent.isNotBlank()) {
             val cookiesFile = File(context.filesDir, "cookies.txt")
             cookiesFile.writeText(appSettings.cookiesTxtContent)
@@ -344,9 +383,6 @@ class MediaDownloaderEngine @Inject constructor(
         request.addOption("-c")
         request.addOption("--no-check-certificates")
         request.addOption("--no-cache-dir")
-        if (isYouTube) {
-            request.addOption("--extractor-args", "youtube:player_client=android,web")
-        }
 
         // Cookies file handling stored securely in app internal filesDir
         if (appSettings.cookiesTxtContent.isNotBlank()) {
