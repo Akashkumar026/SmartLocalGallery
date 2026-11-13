@@ -1,6 +1,7 @@
 package com.example.smartgallery.downloader
 
 import android.content.Context
+import androidx.annotation.Keep
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.aria2c.Aria2c
@@ -10,6 +11,15 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * Hard reference to prevent R8 / AAPT2 resource stripping of bundled yt-dlp binary.
+ */
+@Keep
+object DownloaderResourceKeeper {
+    @Keep
+    val ytdlpRawRes: Int = com.yausername.youtubedl_android.R.raw.ytdlp
+}
 
 /**
  * Interface abstracting native downloader engine initialization (YoutubeDL, FFmpeg, Aria2c)

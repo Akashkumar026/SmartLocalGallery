@@ -122,6 +122,30 @@ class MediaDownloaderEngine @Inject constructor(
         }
     }
 
+    /**
+     * Checks and updates yt-dlp binary from the official stable release channel.
+     */
+    suspend fun updateYtdlBinary(ctx: Context = context): Result<String> = withContext(Dispatchers.IO) {
+        val ready = ensureReady(ctx)
+        if (ready.isFailure) {
+            return@withContext Result.failure(ready.exceptionOrNull() ?: IllegalStateException("Downloader engine not ready"))
+        }
+        try {
+            Log.i(TAG, "Checking and updating yt-dlp binary from official release channel...")
+            val status = YoutubeDL.getInstance().updateYoutubeDL(ctx.applicationContext, YoutubeDL.UpdateChannel.STABLE)
+            val msg = when (status) {
+                YoutubeDL.UpdateStatus.DONE -> "Successfully updated yt-dlp to latest version"
+                YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp engine is already up to date"
+                null -> "yt-dlp update completed"
+            }
+            Log.i(TAG, "yt-dlp update result: $msg")
+            Result.success(msg)
+        } catch (t: Throwable) {
+            Log.e(TAG, "yt-dlp update failed: ${t.message}", t)
+            Result.failure(t)
+        }
+    }
+
     companion object {
         const val TAG = "Downloader"
 
@@ -221,8 +245,23 @@ class MediaDownloaderEngine @Inject constructor(
         }
 
         Log.d(TAG, "Fetching media info for: ${sanitizeUrlForLog(url)}")
-        val info = YoutubeDL.getInstance().getInfo(url)
         val isInsta = url.contains("instagram.com", ignoreCase = true)
+        val isYouTube = url.contains("youtube.com", ignoreCase = true) || url.contains("youtu.be", ignoreCase = true)
+
+        val request = YoutubeDLRequest(url)
+        request.addOption("--dump-json")
+        request.addOption("--no-check-certificates")
+        request.addOption("--no-cache-dir")
+        if (isYouTube) {
+            request.addOption("--extractor-args", "youtube:player_client=android,web")
+        }
+        if (appSettings.cookiesTxtContent.isNotBlank()) {
+            val cookiesFile = File(context.filesDir, "cookies.txt")
+            cookiesFile.writeText(appSettings.cookiesTxtContent)
+            request.addOption("--cookies", cookiesFile.absolutePath)
+        }
+
+        val info = YoutubeDL.getInstance().getInfo(request)
         val durationSeconds = info.duration.toLong()
         val durationMs = durationSeconds * 1000L
 
@@ -298,10 +337,16 @@ class MediaDownloaderEngine @Inject constructor(
             else -> "320k"
         }
 
+        val isYouTube = task.url.contains("youtube.com", true) || task.url.contains("youtu.be", true)
         val request = YoutubeDLRequest(task.url)
 
         // Always pass continue flag to pick up partial downloads
         request.addOption("-c")
+        request.addOption("--no-check-certificates")
+        request.addOption("--no-cache-dir")
+        if (isYouTube) {
+            request.addOption("--extractor-args", "youtube:player_client=android,web")
+        }
 
         // Cookies file handling stored securely in app internal filesDir
         if (appSettings.cookiesTxtContent.isNotBlank()) {
@@ -404,7 +449,7 @@ class MediaDownloaderEngine @Inject constructor(
         } else {
             // Aria2c multi-connection acceleration with resume flag
             val connections = appSettings.downloadAria2cConnections.coerceIn(1, profiler.maxAria2cConnections)
-            request.addOption("--downloader", "aria2c")
+            request.addOption("--downloader", "libaria2c.so")
             request.addOption(
                 "--downloader-args",
                 "aria2c:-c -j $connections -x $connections -s $connections -k 1M --auto-file-renaming=false --allow-overwrite=true"
@@ -430,6 +475,11 @@ class MediaDownloaderEngine @Inject constructor(
             Log.w(TAG, "Initial download pass failed: ${e.message}. Attempting resilient fallback 'best/bestvideo+bestaudio'")
             val fallbackRequest = YoutubeDLRequest(task.url)
             fallbackRequest.addOption("-c")
+            fallbackRequest.addOption("--no-check-certificates")
+            fallbackRequest.addOption("--no-cache-dir")
+            if (isYouTube) {
+                fallbackRequest.addOption("--extractor-args", "youtube:player_client=android,web")
+            }
             if (appSettings.cookiesTxtContent.isNotBlank()) {
                 val cookiesFile = File(context.filesDir, "cookies.txt")
                 fallbackRequest.addOption("--cookies", cookiesFile.absolutePath)

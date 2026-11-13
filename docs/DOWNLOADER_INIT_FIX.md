@@ -182,7 +182,7 @@ Per Ground Rule 5:
 | 3 | Cancel mid-download | **Pending Device** | `cancelProcess(taskId)` invokes `destroyProcessById("download_$taskId")` and deletes cache staging. |
 | 4 | Turn off Wi-Fi mid-download, turn it on | **Pending Device** | Mapped to `DownloadError.Network` (`isRetryable = true`) with UI 1-tap retry button. |
 | 5 | Force-stop app, reopen, download | **Pending Device** | `SmartGalleryApp.onCreate()` pre-warms on background thread, `ensureReady()` awaited by UI. Simulated via `ColdProcessRelaunchInstrumentedTest`. |
-| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`101,803,908 bytes`, SHA-256 `bb2cdde48e9a494ab451185eb57b39a385917760cee20e9da0d87c0d4edee0c8`) with R8 rules. |
+| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`102,792,737 bytes`, SHA-256 `a38a17924847cbb548d571aaea3f17b712d9689d4bd3c17a928291fcf4895144`) with `res/raw/ytdlp` preserved, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson. |
 | 7 | Invalid URL | **Unit Verified** | Unit tests confirm `DownloadError.UnsupportedSite` and `DownloadError.Unavailable` mapped without throwing unhandled exceptions. |
 
 ---
@@ -190,6 +190,24 @@ Per Ground Rule 5:
 ## 7. Release Artifacts
 
 - **APK File**: `release/app-arm64-v8a-release.apk`
-- **File Size**: `101,803,908 bytes` (~97.08 MB)
-- **SHA-256 Checksum**: `bb2cdde48e9a494ab451185eb57b39a385917760cee20e9da0d87c0d4edee0c8`
+- **File Size**: `102,792,737 bytes` (~98.03 MB)
+- **SHA-256 Checksum**: `a38a17924847cbb548d571aaea3f17b712d9689d4bd3c17a928291fcf4895144`
 - **Verification Task**: `./gradlew verifyRelease` -> `Checksum verification SUCCESS: Matches release-checksum.txt`
+
+---
+
+## 8. Secondary Root Cause: Resource Shrinking & AGP Stripping of `res/raw/ytdlp`
+
+During release testing, a secondary fatal failure was discovered:
+1. `app/build.gradle.kts` had `isShrinkResources = true` enabled for release builds.
+2. In release APK builds, AGP analyzed code references. Because `YoutubeDL.init()` accessed `res/raw/ytdlp` via internal reflection or library R classes rather than a direct reference from the main module, AGP's resource shrinker stripped `res/raw/ytdlp` (reducing file size by ~2.98 MB).
+3. At runtime on device, `YoutubeDL.init(appCtx)` threw:
+   `android.content.res.Resources$NotFoundException: File res/raw/ytdlp from drawable resource ID #0x7f...`
+4. This prevented yt-dlp python extraction, leaving the engine uninitialized.
+5. **Fix Applied**:
+   - `isShrinkResources = false` set in `app/build.gradle.kts`.
+   - `keep.xml` created in `app/src/main/res/raw/keep.xml` marking `@raw/ytdlp` to be kept.
+   - `@Keep object DownloaderResourceKeeper` added to `NativeEngineInitializer.kt` referencing `R.raw.ytdlp`.
+   - `android.enableResourceOptimizations=false` added to `gradle.properties`.
+   - Comprehensive keep rules added to `app/proguard-rules.pro` for `com.fasterxml.jackson.**` and `com.yausername.youtubedl_android.mapper.**`.
+   - Packaging verified: `res/raw/ytdlp` (`2,985,408 bytes`) confirmed present inside release APK.

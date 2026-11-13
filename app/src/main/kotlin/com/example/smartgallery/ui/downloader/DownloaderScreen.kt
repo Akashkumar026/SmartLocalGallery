@@ -82,6 +82,28 @@ class DownloaderViewModel @Inject constructor(
     var clipEndTime by mutableStateOf("00:10:00")
     var errorMessage by mutableStateOf<String?>(null)
     var engineError by mutableStateOf<DownloadError.EngineNotReady?>(null)
+    var isUpdatingEngine by mutableStateOf(false)
+    var engineStatusMessage by mutableStateOf<String?>(null)
+
+    fun updateEngine() {
+        if (isUpdatingEngine) return
+        isUpdatingEngine = true
+        engineStatusMessage = "Checking for yt-dlp binary updates..."
+        viewModelScope.launch {
+            engine.updateYtdlBinary(context).fold(
+                onSuccess = { msg ->
+                    android.util.Log.i("Downloader", "Manual engine update success: $msg")
+                    engineStatusMessage = msg
+                    engineError = null
+                },
+                onFailure = { t ->
+                    android.util.Log.e("Downloader", "Manual engine update failed: ${t.message}", t)
+                    engineStatusMessage = "Update notice: ${t.message}"
+                }
+            )
+            isUpdatingEngine = false
+        }
+    }
 
     fun retryEngineInit() {
         viewModelScope.launch {
@@ -479,18 +501,74 @@ fun DownloaderScreen(
                 }
             }
 
+            // Engine status message (e.g. during yt-dlp binary update)
+            viewModel.engineStatusMessage?.let { status ->
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { viewModel.engineStatusMessage = null }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
             // General error display (shown only when no specific engineError is active)
             if (viewModel.engineError == null) {
                 viewModel.errorMessage?.let { error ->
                     item {
                         Card(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                Spacer(Modifier.width(8.dp))
-                                Text(error, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                        Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            "Extraction Notice",
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    }
+                                    FilledTonalButton(
+                                        onClick = { viewModel.updateEngine() },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(32.dp),
+                                        enabled = !viewModel.isUpdatingEngine
+                                    ) {
+                                        if (viewModel.isUpdatingEngine) {
+                                            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                                        } else {
+                                            Icon(Icons.Default.Upgrade, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Update yt-dlp", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = error,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
                     }

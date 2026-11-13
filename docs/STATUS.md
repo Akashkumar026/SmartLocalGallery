@@ -16,7 +16,7 @@ A full architectural audit, security overhaul, feature completion, and verificat
 - **Unit Test Suite**: `./gradlew testReleaseUnitTest` **100% PASSING (36/36 tests)**
 - **Release Verification**: Custom Gradle task `verifyRelease` active
 - **CI Automation**: GitHub Actions workflow `.github/workflows/android-ci.yml` deployed
-- **Release APK SHA-256**: `bb2cdde48e9a494ab451185eb57b39a385917760cee20e9da0d87c0d4edee0c8`
+- **Release APK SHA-256**: `a38a17924847cbb548d571aaea3f17b712d9689d4bd3c17a928291fcf4895144`
 
 ---
 
@@ -54,5 +54,5 @@ Because the current execution environment does not have a physical arm64 device 
 | 3 | Cancel mid-download | **Pending Device** | Cancellation mechanism verified in unit tests and code: `YoutubeDL.destroyProcessById("download_$taskId")` cleans staging directory. |
 | 4 | Turn off Wi-Fi mid-download, turn it on | **Pending Device** | Mapped to typed `DownloadError.Network` with `isRetryable = true`. UI offers 1-tap retry button calling `resumeDownload(task)`. |
 | 5 | Force-stop app, reopen, download | **Pending Device** | Code verified: `SmartGalleryApp.onCreate()` pre-warms `ensureReady()` on background thread, and `ensureReady()` is lazily awaited before any download. Instrumented test `ColdProcessRelaunchInstrumentedTest` written. |
-| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`101,803,908 bytes`, SHA-256 `bb2cdde48e9a494ab451185eb57b39a385917760cee20e9da0d87c0d4edee0c8`) with `useLegacyPackaging = true` and R8 keep rules for `com.yausername.**`. |
+| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`102,792,737 bytes`, SHA-256 `a38a17924847cbb548d571aaea3f17b712d9689d4bd3c17a928291fcf4895144`) with `res/raw/ytdlp` preserved, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson mapper classes. |
 | 7 | Invalid URL | **Unit Verified** | Unit tests confirm `DownloadError.UnsupportedSite` and `DownloadError.Unavailable` mapped without throwing unhandled exceptions. |

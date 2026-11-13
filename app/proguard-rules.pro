@@ -26,10 +26,27 @@
 
 # Keep Embedded Downloader Engines (yt-dlp, FFmpeg, Aria2c)
 -keep class com.yausername.** { *; }
+-keepclassmembers class com.yausername.** { *; }
 -keep class com.yausername.youtubedl_android.** { *; }
+-keepclassmembers class com.yausername.youtubedl_android.** { *; }
+-keep class com.yausername.youtubedl_android.mapper.** { *; }
+-keepclassmembers class com.yausername.youtubedl_android.mapper.** { *; }
 -keep class com.yausername.ffmpeg.** { *; }
+-keepclassmembers class com.yausername.ffmpeg.** { *; }
 -keep class com.yausername.aria2c.** { *; }
+-keepclassmembers class com.yausername.aria2c.** { *; }
 -dontwarn com.yausername.**
+
+# Keep Jackson & Reflection for youtubedl-android JSON parsing
+-keep class com.fasterxml.jackson.** { *; }
+-keepclassmembers class com.fasterxml.jackson.** { *; }
+-dontwarn com.fasterxml.jackson.**
+-keep class org.apache.commons.io.** { *; }
+-dontwarn org.apache.commons.io.**
+-keepattributes *Annotation*,EnclosingMethod,Signature,InnerClasses
+-keepclassmembers class * {
+    @com.fasterxml.jackson.annotation.* *;
+}
 
 # Keep TensorFlow Lite & LiteRT
 -keep class org.tensorflow.lite.** { *; }
