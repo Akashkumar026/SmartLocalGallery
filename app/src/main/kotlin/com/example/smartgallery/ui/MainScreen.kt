@@ -6,6 +6,7 @@ import android.net.Uri
 import android.text.format.DateFormat
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Animatable
@@ -1711,6 +1712,31 @@ fun CleanerScreen(
     var selectedCleanerTab by remember { mutableStateOf(0) }
     var showEmptyTrashDialog by remember { mutableStateOf(false) }
     var itemToDeletePermanently by remember { mutableStateOf<MediaItem?>(null) }
+    var pendingDeletionBatch by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+
+    val deleteConsentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            viewModel.confirmDeleteMedia(pendingDeletionBatch)
+            pendingDeletionBatch = emptyList()
+        }
+    }
+
+    fun triggerPermanentDelete(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        pendingDeletionBatch = items
+        viewModel.requestDeleteMedia(
+            items = items,
+            onNeedConsent = { intentSender ->
+                deleteConsentLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+            },
+            onDeleted = {
+                viewModel.confirmDeleteMedia(items)
+                pendingDeletionBatch = emptyList()
+            }
+        )
+    }
 
     val exactGroups = remember(duplicateGroups) { duplicateGroups.filter { it.groupType == "EXACT" } }
     val similarImages = remember(duplicateGroups) { duplicateGroups.filter { it.groupType == "SIMILAR_IMAGE" } }
@@ -2115,8 +2141,9 @@ fun CleanerScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.emptyTrash()
+                        val itemsToPurge = trashedItems.toList()
                         showEmptyTrashDialog = false
+                        triggerPermanentDelete(itemsToPurge)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
@@ -2141,8 +2168,8 @@ fun CleanerScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.permanentlyDelete(item)
                         itemToDeletePermanently = null
+                        triggerPermanentDelete(listOf(item))
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {

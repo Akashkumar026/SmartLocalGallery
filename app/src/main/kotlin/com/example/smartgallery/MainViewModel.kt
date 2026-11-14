@@ -317,6 +317,33 @@ class MainViewModel @Inject constructor(
         moveToTrash(item)
     }
 
+    fun requestDeleteMedia(
+        items: List<MediaItem>,
+        onNeedConsent: (android.content.IntentSender) -> Unit,
+        onDeleted: () -> Unit
+    ) {
+        viewModelScope.launch {
+            when (val result = vaultManager.requestDeleteMedia(items)) {
+                is VaultAndFileManager.DeleteResult.RequiresUserConsent -> {
+                    onNeedConsent(result.intentSender)
+                }
+                is VaultAndFileManager.DeleteResult.Success -> {
+                    onDeleted()
+                }
+                is VaultAndFileManager.DeleteResult.Error -> {
+                    Log.w("MainViewModel", "Delete request warning: ${result.message}")
+                    onDeleted()
+                }
+            }
+        }
+    }
+
+    fun confirmDeleteMedia(items: List<MediaItem>) {
+        viewModelScope.launch {
+            vaultManager.onItemsDeletedFromStorage(items)
+        }
+    }
+
     fun updateClusterName(clusterId: Long, name: String) {
         viewModelScope.launch {
             db.personClusterDao().updateName(clusterId, name)

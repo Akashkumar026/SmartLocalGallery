@@ -183,7 +183,7 @@ Per Ground Rule 5:
 | 3 | Cancel mid-download | **Pending Device** | `cancelProcess(taskId)` invokes `destroyProcessById("download_$taskId")` and deletes cache staging. |
 | 4 | Turn off Wi-Fi mid-download, turn it on | **Pending Device** | Mapped to `DownloadError.Network` (`isRetryable = true`) with UI 1-tap retry button. |
 | 5 | Force-stop app, reopen, download | **Pending Device** | `SmartGalleryApp.onCreate()` pre-warms on background thread, `ensureReady()` awaited by UI. Simulated via `ColdProcessRelaunchInstrumentedTest`. |
-| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`124,863,046 bytes`, SHA-256 `389675294de4ec4f6bd24af892d5e18bb538fac7b3af93a8ecb72bcafe392898`) with updated `0.18.1` engine, QuickJS (`libqjs.so`), 16KB page alignment, bundled yt-dlp binary synced, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson. |
+| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`124,770,146 bytes`, SHA-256 `3d1e7854209f2512d69bebb0071aed0a9be8c81a28d0f401e14f0612866cdca4`) with updated `0.18.1` engine, QuickJS (`libqjs.so`), 16KB page alignment, bundled yt-dlp binary synced, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson. |
 | 7 | Invalid URL | **Unit Verified** | Unit tests confirm `DownloadError.UnsupportedSite` and `DownloadError.Unavailable` mapped without throwing unhandled exceptions. |
 
 ---
@@ -191,8 +191,8 @@ Per Ground Rule 5:
 ## 7. Release Artifacts
 
 - **APK File**: `release/app-arm64-v8a-release.apk`
-- **File Size**: `124,863,046 bytes` (~119.08 MB)
-- **SHA-256 Checksum**: `389675294de4ec4f6bd24af892d5e18bb538fac7b3af93a8ecb72bcafe392898`
+- **File Size**: `124,770,146 bytes` (~119.00 MB)
+- **SHA-256 Checksum**: `3d1e7854209f2512d69bebb0071aed0a9be8c81a28d0f401e14f0612866cdca4`
 - **Verification Task**: `./gradlew verifyRelease` -> `Checksum verification SUCCESS: Matches release-checksum.txt`
 
 ---

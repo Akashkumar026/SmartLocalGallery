@@ -144,7 +144,7 @@ class MediaDownloaderEngine @Inject constructor(
                 val u = java.net.URL(currentUrl)
                 connection = u.openConnection() as java.net.HttpURLConnection
                 connection.instanceFollowRedirects = false
-                connection.setRequestProperty("User-Agent", "SmartLocalGallery/2.0 (Android)")
+                connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
                 connection.connectTimeout = 15000
                 connection.readTimeout = 30000
                 val code = connection.responseCode
@@ -294,6 +294,8 @@ class MediaDownloaderEngine @Inject constructor(
         request.addOption("--dump-json")
         request.addOption("--no-check-certificates")
         request.addOption("--no-cache-dir")
+        request.addOption("--ignore-errors")
+        request.addOption("--no-warnings")
         if (appSettings.cookiesTxtContent.isNotBlank()) {
             val cookiesFile = File(context.filesDir, "cookies.txt")
             cookiesFile.writeText(appSettings.cookiesTxtContent)
@@ -383,6 +385,8 @@ class MediaDownloaderEngine @Inject constructor(
         request.addOption("-c")
         request.addOption("--no-check-certificates")
         request.addOption("--no-cache-dir")
+        request.addOption("--ignore-errors")
+        request.addOption("--no-warnings")
 
         // Cookies file handling stored securely in app internal filesDir
         if (appSettings.cookiesTxtContent.isNotBlank()) {
@@ -519,6 +523,8 @@ class MediaDownloaderEngine @Inject constructor(
             fallbackRequest.addOption("-c")
             fallbackRequest.addOption("--no-check-certificates")
             fallbackRequest.addOption("--no-cache-dir")
+            fallbackRequest.addOption("--ignore-errors")
+            fallbackRequest.addOption("--no-warnings")
             if (appSettings.cookiesTxtContent.isNotBlank()) {
                 val cookiesFile = File(context.filesDir, "cookies.txt")
                 fallbackRequest.addOption("--cookies", cookiesFile.absolutePath)

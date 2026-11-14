@@ -58,6 +58,12 @@ class DefaultNativeEngineInitializer @Inject constructor() : NativeEngineInitial
                 targetFile.setExecutable(true, false)
                 android.util.Log.i("Downloader", "Synchronized bundled yt-dlp binary (${resBytes.size} bytes) to ${targetFile.absolutePath}")
             }
+            try {
+                val qjsFile = java.io.File(appCtx.applicationInfo.nativeLibraryDir, "libqjs.so")
+                if (qjsFile.exists()) {
+                    qjsFile.setExecutable(true, false)
+                }
+            } catch (_: Throwable) {}
         } catch (t: Throwable) {
             android.util.Log.w("Downloader", "Non-fatal: could not sync bundled yt-dlp: ${t.message}")
         }

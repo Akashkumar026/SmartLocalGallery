@@ -17,8 +17,11 @@ import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -313,6 +316,20 @@ fun ImageViewerScreen(
     val detectedSmartBarcodes = remember { mutableStateListOf<SmartBarcode>() }
     var isAnalyzing by remember { mutableStateOf(false) }
     var showDetailsSheet by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var pendingDeleteItem by remember { mutableStateOf<com.example.smartgallery.data.db.MediaItem?>(null) }
+
+    val deleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            scope.launch {
+                pendingDeleteItem?.let { vaultManager.onItemsDeletedFromStorage(listOf(it)) }
+                Toast.makeText(context, "Photo deleted", Toast.LENGTH_SHORT).show()
+                navController.popBackStack()
+            }
+        }
+    }
 
     BackHandler(enabled = showDetailsSheet) {
         showDetailsSheet = false
@@ -472,6 +489,14 @@ fun ImageViewerScreen(
                         }
                     }) {
                         Icon(Icons.Default.Share, contentDescription = "Sanitize & Share")
+                    }
+                    // Delete Photo
+                    IconButton(onClick = { showDeleteDialog = true }) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete Photo",
+                            tint = MaterialTheme.colorScheme.error
+                        )
                     }
                 }
             )
@@ -703,6 +728,57 @@ fun ImageViewerScreen(
                 mediaPath = mediaPath,
                 mediaUri = mediaUri,
                 onDismiss = { showDetailsSheet = false }
+            )
+        }
+
+        // Delete Confirmation Dialog
+        if (showDeleteDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteDialog = false },
+                icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Delete Photo?") },
+                text = { Text("Are you sure you want to delete this photo from your device? This cannot be undone.") },
+                confirmButton = {
+                    Button(
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        onClick = {
+                            showDeleteDialog = false
+                            scope.launch {
+                                val item = vaultManager.findMediaItem(mediaPath)
+                                if (item != null) {
+                                    pendingDeleteItem = item
+                                    when (val res = vaultManager.requestDeleteMedia(listOf(item))) {
+                                        is VaultAndFileManager.DeleteResult.RequiresUserConsent -> {
+                                            deleteLauncher.launch(
+                                                IntentSenderRequest.Builder(res.intentSender).build()
+                                            )
+                                        }
+                                        is VaultAndFileManager.DeleteResult.Success -> {
+                                            vaultManager.onItemsDeletedFromStorage(listOf(item))
+                                            Toast.makeText(context, "Photo deleted", Toast.LENGTH_SHORT).show()
+                                            navController.popBackStack()
+                                        }
+                                        is VaultAndFileManager.DeleteResult.Error -> {
+                                            Toast.makeText(context, "Could not delete: ${res.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } else {
+                                    val f = File(mediaPath)
+                                    if (f.exists()) f.delete()
+                                    Toast.makeText(context, "Photo deleted", Toast.LENGTH_SHORT).show()
+                                    navController.popBackStack()
+                                }
+                            }
+                        }
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
             )
         }
     }

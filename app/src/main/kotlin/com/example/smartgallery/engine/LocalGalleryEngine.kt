@@ -142,6 +142,13 @@ class LocalGalleryEngine @Inject constructor(
         var hasMore = true
         val itemsToInsert = mutableListOf<MediaItem>()
 
+        val existingMap = try {
+            db.mediaItemDao().getIndexRecordsForType(mediaType).associateBy { it.mediaStoreId }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        val scannedMsIds = HashSet<Long>()
+
         while (hasMore) {
             try {
                 val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -192,8 +199,9 @@ class LocalGalleryEngine @Inject constructor(
                             val dateModified = if (dateModCol >= 0) c.getLong(dateModCol) else 0L
                             val genMod = if (genModCol >= 0) c.getLong(genModCol) else 0L
 
-                            // Skip unchanged files by checking _ID, DATE_MODIFIED, and GENERATION_MODIFIED
-                            val existing = db.mediaItemDao().getByMediaStoreId(msId)
+                            scannedMsIds.add(msId)
+                            // Skip unchanged files by checking _ID, DATE_MODIFIED, and GENERATION_MODIFIED in fast memory cache
+                            val existing = existingMap[msId]
                             if (existing != null && existing.dateModified == dateModified &&
                                 (genMod == 0L || existing.generationModified == genMod)) {
                                 continue
@@ -274,6 +282,17 @@ class LocalGalleryEngine @Inject constructor(
                 db.mediaItemDao().insertAll(batch)
             }
             itemsToInsert.clear()
+        }
+
+        // Clean up deleted items from database that no longer exist in MediaStore
+        if (scannedMsIds.isNotEmpty() && existingMap.isNotEmpty()) {
+            val deletedMsIds = existingMap.keys.filter { !scannedMsIds.contains(it) }
+            if (deletedMsIds.isNotEmpty()) {
+                deletedMsIds.chunked(200).forEach { batch ->
+                    db.mediaItemDao().deleteByMediaStoreIds(batch)
+                }
+                Log.i(TAG, "Purged ${deletedMsIds.size} deleted items from Room for $mediaType")
+            }
         }
         return count
     }

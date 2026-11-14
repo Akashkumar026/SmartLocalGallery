@@ -267,8 +267,25 @@ data class VaultItemEntity(
 
 // ─── DAOs ───────────────────────────────────────────────────────────────────
 
+data class MediaStoreIndexRecord(
+    val id: Long,
+    val mediaStoreId: Long,
+    val dateModified: Long,
+    val generationModified: Long,
+    val smartCategory: String?,
+    val isUserOverridden: Boolean,
+    val hasSensitiveId: Boolean,
+    val classifierVersion: Int
+)
+
 @Dao
 interface MediaItemDao {
+    @Query("SELECT id, mediaStoreId, dateModified, generationModified, smartCategory, isUserOverridden, hasSensitiveId, classifierVersion FROM media_items WHERE mediaType = :mediaType AND isVaultItem = 0")
+    suspend fun getIndexRecordsForType(mediaType: String): List<MediaStoreIndexRecord>
+
+    @Query("DELETE FROM media_items WHERE mediaStoreId IN (:mediaStoreIds) AND isVaultItem = 0")
+    suspend fun deleteByMediaStoreIds(mediaStoreIds: List<Long>): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: MediaItem): Long
 
@@ -637,6 +654,7 @@ abstract class GalleryDatabase : RoomDatabase() {
                     GalleryDatabase::class.java,
                     "smart_local_gallery.db"
                 )
+                    .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

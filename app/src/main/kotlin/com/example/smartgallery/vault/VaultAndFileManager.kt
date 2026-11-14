@@ -458,6 +458,74 @@ class VaultAndFileManager @Inject constructor(
 
     // ─── 2. 30-Day Recycle Bin ──────────────────────────────────────────────
 
+    sealed class DeleteResult {
+        object Success : DeleteResult()
+        data class RequiresUserConsent(val intentSender: IntentSender) : DeleteResult()
+        data class Error(val message: String) : DeleteResult()
+    }
+
+    suspend fun findMediaItem(pathOrUri: String): MediaItem? = withContext(Dispatchers.IO) {
+        val byPath = db.mediaItemDao().getByPath(pathOrUri)
+        if (byPath != null) return@withContext byPath
+        val uri = if (pathOrUri.startsWith("content://")) Uri.parse(pathOrUri) else null
+        if (uri != null) {
+            val id = uri.lastPathSegment?.toLongOrNull()
+            if (id != null) {
+                return@withContext db.mediaItemDao().getByMediaStoreId(id)
+            }
+        }
+        null
+    }
+
+    suspend fun requestDeleteMedia(mediaItems: List<MediaItem>): DeleteResult = withContext(Dispatchers.IO) {
+        if (mediaItems.isEmpty()) return@withContext DeleteResult.Success
+        val uris = mediaItems.map { it.contentUri }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val intentSender = MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
+                DeleteResult.RequiresUserConsent(intentSender)
+            } catch (e: Exception) {
+                DeleteResult.Error(e.message ?: "Failed to create delete request")
+            }
+        } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+            for (item in mediaItems) {
+                try {
+                    val count = context.contentResolver.delete(item.contentUri, null, null)
+                    if (count > 0) {
+                        db.mediaItemDao().deleteById(item.id)
+                    }
+                } catch (rse: android.app.RecoverableSecurityException) {
+                    return@withContext DeleteResult.RequiresUserConsent(rse.userAction.actionIntent.intentSender)
+                } catch (e: Exception) {
+                    return@withContext DeleteResult.Error(e.message ?: "Failed to delete item")
+                }
+            }
+            DeleteResult.Success
+        } else {
+            for (item in mediaItems) {
+                try {
+                    context.contentResolver.delete(item.contentUri, null, null)
+                    val file = File(item.absolutePath)
+                    if (file.exists()) file.delete()
+                    db.mediaItemDao().deleteById(item.id)
+                } catch (_: Exception) {}
+            }
+            DeleteResult.Success
+        }
+    }
+
+    suspend fun onItemsDeletedFromStorage(items: List<MediaItem>) = withContext(Dispatchers.IO) {
+        items.forEach { item ->
+            try {
+                val file = File(item.absolutePath)
+                if (file.exists()) file.delete()
+            } catch (_: Exception) {}
+            db.mediaItemDao().deleteById(item.id)
+            db.mediaFtsDao().delete(item.id)
+        }
+        Log.i(TAG, "Successfully removed ${items.size} deleted items from database and index")
+    }
+
     suspend fun moveToTrash(mediaItem: MediaItem) = withContext(Dispatchers.IO) {
         db.mediaItemDao().setTrashed(mediaItem.id, true, System.currentTimeMillis())
         Log.i(TAG, "Moved item #${mediaItem.id} to 30-day Recycle Bin")
