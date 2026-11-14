@@ -30,7 +30,10 @@
 -keep class com.yausername.youtubedl_android.** { *; }
 -keepclassmembers class com.yausername.youtubedl_android.** { *; }
 -keep class com.yausername.youtubedl_android.mapper.** { *; }
--keepclassmembers class com.yausername.youtubedl_android.mapper.** { *; }
+-keepclassmembers class com.yausername.youtubedl_android.mapper.** {
+    <fields>;
+    <methods>;
+}
 -keep class com.yausername.ffmpeg.** { *; }
 -keepclassmembers class com.yausername.ffmpeg.** { *; }
 -keep class com.yausername.aria2c.** { *; }
@@ -41,12 +44,23 @@
 -keep class com.fasterxml.jackson.** { *; }
 -keepclassmembers class com.fasterxml.jackson.** { *; }
 -dontwarn com.fasterxml.jackson.**
--keep class org.apache.commons.io.** { *; }
--dontwarn org.apache.commons.io.**
--keepattributes *Annotation*,EnclosingMethod,Signature,InnerClasses
+-keepattributes *Annotation*,EnclosingMethod,Signature,InnerClasses,SourceFile,LineNumberTable
 -keepclassmembers class * {
-    @com.fasterxml.jackson.annotation.* *;
+    @com.fasterxml.jackson.annotation.* <fields>;
+    @com.fasterxml.jackson.annotation.* <methods>;
 }
+
+# Keep Apache Commons Compress & IO for youtubedl-android ZipUtils extraction (libpython.zip.so, packages.zip, etc.)
+-keep class org.apache.commons.compress.** { *; }
+-keepclassmembers class org.apache.commons.compress.** { *; }
+-dontwarn org.apache.commons.compress.**
+-keep class * implements org.apache.commons.compress.archivers.zip.ZipExtraField {
+    public <init>();
+    *;
+}
+-keep class org.apache.commons.io.** { *; }
+-keepclassmembers class org.apache.commons.io.** { *; }
+-dontwarn org.apache.commons.io.**
 
 # Keep TensorFlow Lite & LiteRT
 -keep class org.tensorflow.lite.** { *; }

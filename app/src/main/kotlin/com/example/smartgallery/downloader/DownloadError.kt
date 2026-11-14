@@ -14,11 +14,17 @@ sealed class DownloadError(open val message: String, val isRetryable: Boolean) {
         fun fromThrowable(t: Throwable): DownloadError {
             val msg = t.message ?: t.localizedMessage ?: "Unknown error"
             return when {
+                t is java.lang.ExceptionInInitializerError ||
+                t is UnsatisfiedLinkError ||
                 msg.contains("instance not initialized", ignoreCase = true) ||
                 msg.contains("failed to initialize", ignoreCase = true) ||
                 msg.contains("Downloader engine", ignoreCase = true) ||
+                msg.contains("concrete class", ignoreCase = true) ||
+                msg.contains("ZipExtraField", ignoreCase = true) ||
                 (msg.contains("YoutubeDL", ignoreCase = true) && msg.contains("not initialized", ignoreCase = true)) ||
-                (t is IllegalStateException && msg.contains("not initialized", ignoreCase = true)) ->
+                (t is IllegalStateException && msg.contains("not initialized", ignoreCase = true)) ||
+                (t.cause?.message?.contains("not initialized", ignoreCase = true) == true) ||
+                (t.cause?.message?.contains("concrete class", ignoreCase = true) == true) ->
                     EngineNotReady(msg, t)
 
                 msg.contains("Low Storage Space", ignoreCase = true) ||
@@ -53,8 +59,14 @@ sealed class DownloadError(open val message: String, val isRetryable: Boolean) {
                 msg.contains("HTTP Error 404", ignoreCase = true) ||
                 msg.contains("HTTP Error 403", ignoreCase = true) ||
                 msg.contains("This video requires payment", ignoreCase = true) ||
-                msg.contains("login required", ignoreCase = true) ->
-                    Unavailable(msg)
+                msg.contains("login required", ignoreCase = true) ||
+                msg.contains("Sign in to confirm", ignoreCase = true) ||
+                msg.contains("bot", ignoreCase = true) ->
+                    Unavailable(
+                        if (msg.contains("Sign in to confirm", ignoreCase = true) || msg.contains("bot", ignoreCase = true)) {
+                            "YouTube verification required: Please import cookies.txt using the Key icon in the top bar."
+                        } else msg
+                    )
 
                 msg.contains("cancel", ignoreCase = true) ||
                 msg.contains("destroyProcess", ignoreCase = true) ||

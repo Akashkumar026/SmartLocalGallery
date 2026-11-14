@@ -292,6 +292,7 @@ class MediaDownloaderEngine @Inject constructor(
 
         val request = YoutubeDLRequest(url)
         request.addOption("--dump-json")
+        request.addOption("--no-playlist")
         request.addOption("--no-check-certificates")
         request.addOption("--no-cache-dir")
         request.addOption("--ignore-errors")
@@ -383,9 +384,9 @@ class MediaDownloaderEngine @Inject constructor(
 
         // Always pass continue flag to pick up partial downloads
         request.addOption("-c")
+        request.addOption("--no-playlist")
         request.addOption("--no-check-certificates")
         request.addOption("--no-cache-dir")
-        request.addOption("--ignore-errors")
         request.addOption("--no-warnings")
 
         // Cookies file handling stored securely in app internal filesDir
@@ -521,9 +522,9 @@ class MediaDownloaderEngine @Inject constructor(
             Log.w(TAG, "Initial download pass failed: ${e.message}. Attempting resilient fallback 'best/bestvideo+bestaudio'")
             val fallbackRequest = YoutubeDLRequest(task.url)
             fallbackRequest.addOption("-c")
+            fallbackRequest.addOption("--no-playlist")
             fallbackRequest.addOption("--no-check-certificates")
             fallbackRequest.addOption("--no-cache-dir")
-            fallbackRequest.addOption("--ignore-errors")
             fallbackRequest.addOption("--no-warnings")
             if (appSettings.cookiesTxtContent.isNotBlank()) {
                 val cookiesFile = File(context.filesDir, "cookies.txt")

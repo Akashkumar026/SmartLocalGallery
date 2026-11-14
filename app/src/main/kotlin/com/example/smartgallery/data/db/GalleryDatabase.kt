@@ -575,6 +575,9 @@ interface DownloadTaskDao {
 
     @Query("UPDATE download_tasks SET status = :status, completedAt = :completedAt, outputPath = :outputPath, errorMsg = :error WHERE id = :id")
     suspend fun updateCompletion(id: Long, status: String, completedAt: Long?, outputPath: String?, error: String?)
+
+    @Query("UPDATE download_tasks SET title = :title WHERE id = :id")
+    suspend fun updateTitle(id: Long, title: String)
 }
 
 @Dao

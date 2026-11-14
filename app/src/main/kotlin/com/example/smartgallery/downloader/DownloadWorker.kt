@@ -82,7 +82,9 @@ class DownloadWorker @AssistedInject constructor(
                 }
             }
 
-            // Mark completed in database with valid output path
+            // Mark completed in database with valid output path and updated real media title
+            val cleanTitle = outputFile.nameWithoutExtension.replace(Regex("-[a-zA-Z0-9_-]{11}$"), "").ifBlank { outputFile.nameWithoutExtension }
+            db.downloadTaskDao().updateTitle(taskId, cleanTitle)
             db.downloadTaskDao().updateCompletion(taskId, "COMPLETED", System.currentTimeMillis(), outputFile.absolutePath, null)
 
             // Notify MediaScanner and index into Room MediaItem table

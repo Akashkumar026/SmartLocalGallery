@@ -165,6 +165,54 @@ class DownloaderViewModel @Inject constructor(
         }
     }
 
+    fun startDirectDownload(targetUrl: String = urlInput, isAudio: Boolean = false) {
+        val cleanUrl = targetUrl.trim()
+        if (cleanUrl.isBlank()) return
+        urlInput = cleanUrl
+        errorMessage = null
+        engineError = null
+
+        viewModelScope.launch {
+            val readyRes = engine.ensureReady(context)
+            if (readyRes.isFailure) {
+                val t = readyRes.exceptionOrNull() ?: IllegalStateException("Downloader engine is not initialized")
+                android.util.Log.e("Downloader", "Direct download aborted: Engine not ready: ${t.message}", t)
+                val typed = DownloadError.fromThrowable(t)
+                if (typed is DownloadError.EngineNotReady) {
+                    engineError = typed
+                }
+                errorMessage = typed.message
+                return@launch
+            }
+
+            val qualityStr = if (isAudio) "AUDIO_320k_MP3" else "1080p_MP4"
+            val mediaTypeStr = if (isAudio) "AUDIO" else "VIDEO"
+            val cleanTitle = cleanUrl.substringAfterLast("/").take(40).ifBlank { "Media Download" }
+
+            val task = DownloadTask(
+                url = cleanUrl,
+                title = cleanTitle,
+                mediaType = mediaTypeStr,
+                quality = qualityStr,
+                status = "QUEUED",
+                isClipped = false,
+                clipStartMs = 0L,
+                clipEndMs = 0L,
+                createdAt = System.currentTimeMillis()
+            )
+            val taskId = db.downloadTaskDao().insert(task)
+
+            val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
+                .addTag("download_$taskId")
+                .setInputData(Data.Builder().putLong(DownloadWorker.KEY_TASK_ID, taskId).build())
+                .build()
+            WorkManager.getInstance(context).enqueue(workRequest)
+
+            mediaInfo = null
+            urlInput = ""
+        }
+    }
+
     fun startDownload() {
         val info = mediaInfo ?: return
         viewModelScope.launch {
@@ -376,26 +424,46 @@ fun DownloaderScreen(
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .padding(12.dp)
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.ContentPaste, contentDescription = null)
                                 Spacer(Modifier.width(8.dp))
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text("Link detected in clipboard", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                     Text(clipUrl.take(45) + if (clipUrl.length > 45) "..." else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
                                 }
                             }
-                            Button(onClick = {
-                                viewModel.inspectUrl(clipUrl)
-                                clipboardUrl = null
-                            }) {
-                                Text("Paste & Fetch")
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        viewModel.startDirectDownload(clipUrl, isAudio = false)
+                                        clipboardUrl = null
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Download Video", fontSize = 12.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.inspectUrl(clipUrl)
+                                        clipboardUrl = null
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Inspect & Options", fontSize = 12.sp)
+                                }
                             }
                         }
                     }
@@ -435,19 +503,46 @@ fun DownloaderScreen(
                             }
                         )
                         Spacer(Modifier.height(12.dp))
-                        Button(
+
+                        // Quick 1-Tap Download Buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { viewModel.startDirectDownload(isAudio = false) },
+                                modifier = Modifier.weight(1f),
+                                enabled = viewModel.urlInput.isNotBlank() && !viewModel.isInspecting && !appSettings.strictOfflineLockdown
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Download (1080p)")
+                            }
+                            FilledTonalButton(
+                                onClick = { viewModel.startDirectDownload(isAudio = true) },
+                                modifier = Modifier.weight(1f),
+                                enabled = viewModel.urlInput.isNotBlank() && !viewModel.isInspecting && !appSettings.strictOfflineLockdown
+                            ) {
+                                Icon(Icons.Default.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Audio (MP3)")
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
                             onClick = { viewModel.inspectUrl() },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = viewModel.urlInput.isNotBlank() && !viewModel.isInspecting && !appSettings.strictOfflineLockdown
                         ) {
                             if (viewModel.isInspecting) {
-                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(8.dp))
-                                Text("Analyzing Stream...")
+                                Text("Inspecting Stream...")
                             } else {
-                                Icon(Icons.Default.Search, contentDescription = null)
+                                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("Fetch Media Info")
+                                Text("Inspect & Custom Options (4K, MKV, Clipper)")
                             }
                         }
                     }
