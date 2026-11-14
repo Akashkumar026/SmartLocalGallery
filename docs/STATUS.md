@@ -16,7 +16,7 @@ A full architectural audit, security overhaul, feature completion, and verificat
 - **Unit Test Suite**: `./gradlew testReleaseUnitTest` **100% PASSING (36/36 tests)**
 - **Release Verification**: Custom Gradle task `verifyRelease` active
 - **CI Automation**: GitHub Actions workflow `.github/workflows/android-ci.yml` deployed
-- **Release APK SHA-256**: `3d1e7854209f2512d69bebb0071aed0a9be8c81a28d0f401e14f0612866cdca4`
+- **Release APK SHA-256**: `8b3da83a4966d80e1a92a643b33b23b78f382a2611d60fd7cf810a081ff6b77e`
 
 ---
 
@@ -48,7 +48,7 @@ A full architectural audit, security overhaul, feature completion, and verificat
 Device testing was conducted on a live physical arm64-v8a device running Android 16:
 - **Device**: Xiaomi POCO X6 Pro / Redmi K70E (`duchamp_in`, serial `QW8DYT79PJMRKJOR`)
 - **Android Version**: Android 16 (API 36, `arm64-v8a`)
-- **Build**: `release/app-arm64-v8a-release.apk` (SHA-256 `3d1e7854209f2512d69bebb0071aed0a9be8c81a28d0f401e14f0612866cdca4`, `124,770,146 bytes`)
+- **Build**: `release/app-arm64-v8a-release.apk` (SHA-256 `8b3da83a4966d80e1a92a643b33b23b78f382a2611d60fd7cf810a081ff6b77e`, `124,891,734 bytes`)
 - **Installation**: `adb install -r -d` -> `Performing Streamed Install` -> `Success`
 - **PID**: `24778`
 

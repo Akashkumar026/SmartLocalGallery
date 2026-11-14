@@ -2,8 +2,8 @@
 
 A modern, production-grade Android Gallery, Cinema Media Player, Universal Downloader, and Encrypted Vault built with **Jetpack Compose**, **AndroidX Media3 (ExoPlayer)**, **LibVLC 3.7.5 Universal Fallback**, **100% Offline ML Kit**, and **Hardware-Backed AES-256-GCM Encryption**.
 
-[![Release](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v2.0.0)
-[![Direct Download APK](https://img.shields.io/badge/Download-APK%20v2.0.0%20(arm64--v8a)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v2.0.0/app-arm64-v8a-release.apk)
+[![Release](https://img.shields.io/badge/Release-v3.0.0-blue.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.0.0)
+[![Direct Download APK](https://img.shields.io/badge/Download-APK%20v3.0.0%20(arm64--v8a)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/app-arm64-v8a-release.apk)
 [![compileSdk](https://img.shields.io/badge/compileSdk-35-orange.svg)]()
 [![minSdk](https://img.shields.io/badge/minSdk-26-yellow.svg)]()
 
@@ -13,14 +13,14 @@ A modern, production-grade Android Gallery, Cinema Media Player, Universal Downl
 
 Download the production-ready APK directly from the official GitHub Release:
 
-- 🚀 **[Download v2.0.0 from GitHub Releases (Fast CDN)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v2.0.0/app-arm64-v8a-release.apk)**
-- 🏷️ **[View GitHub Release v2.0.0 Assets & Notes](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v2.0.0)**
+- 🚀 **[Download v3.0.0 from GitHub Releases (Fast CDN)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/app-arm64-v8a-release.apk)**
+- 🏷️ **[View GitHub Release v3.0.0 Assets & Notes](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.0.0)**
 
 ### 🛡️ Build Verification Details
-- **Version**: `2.0.0` (versionCode `2`)
+- **Version**: `3.0.0` (versionCode `3`)
 - **Filename**: `app-arm64-v8a-release.apk`
-- **File Size**: `124,770,146 bytes` (~119.00 MB)
-- **SHA-256 Checksum**: `3d1e7854209f2512d69bebb0071aed0a9be8c81a28d0f401e14f0612866cdca4`
+- **File Size**: `124,891,734 bytes` (~119.11 MB)
+- **SHA-256 Checksum**: `8b3da83a4966d80e1a92a643b33b23b78f382a2611d60fd7cf810a081ff6b77e`
 - **Architecture**: `arm64-v8a` (Android 8.0+ / API 26–35)
 
 ---

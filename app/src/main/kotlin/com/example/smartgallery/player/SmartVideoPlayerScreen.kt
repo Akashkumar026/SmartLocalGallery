@@ -56,6 +56,9 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -787,6 +790,8 @@ fun SmartVideoPlayerScreen(
                             var scrubTargetMs = exoPlayer.currentPosition
                             val durationMs = duration.coerceAtLeast(1L)
                             val initialPositionMs = exoPlayer.currentPosition
+                            var dragVolume = volumeBoostPercent
+                            var dragBrightness = localBrightness
 
                             val isDoubleTapCandidate = (downTime - lastTapTime < 350L) &&
                                 ((startPos - lastTapPos).getDistance() < 120f)
@@ -861,9 +866,11 @@ fun SmartVideoPlayerScreen(
                                             if (startPos.x < screenWidth / 2f) {
                                                 isVerticalBrightness = true
                                                 activeGesture = ActiveGesture.BRIGHTNESS
+                                                dragBrightness = localBrightness
                                             } else {
                                                 isVerticalVolume = true
                                                 activeGesture = ActiveGesture.VOLUME
+                                                dragVolume = volumeBoostPercent
                                             }
                                         }
                                     }
@@ -882,18 +889,14 @@ fun SmartVideoPlayerScreen(
                                         }
                                         isVerticalBrightness -> {
                                             val deltaFraction = -deltaY / screenHeight
-                                            localBrightness = (localBrightness + deltaFraction * 1.5f).coerceIn(0.01f, 1.0f)
+                                            dragBrightness = (dragBrightness + deltaFraction * 1.0f).coerceIn(0.01f, 1.0f)
+                                            localBrightness = dragBrightness
                                             setWindowBrightness(activity, localBrightness)
                                         }
                                         isVerticalVolume -> {
                                             val deltaFraction = -deltaY / screenHeight
-                                            val currentVolPct = volumeBoostPercent
-                                            val newVolPct = (currentVolPct + deltaFraction * 150f).coerceIn(0f, 200f)
-                                            if (newVolPct > currentVolPct) {
-                                                viewModel.increaseVolume()
-                                            } else if (newVolPct < currentVolPct) {
-                                                viewModel.decreaseVolume()
-                                            }
+                                            dragVolume = (dragVolume + deltaFraction * 100f).coerceIn(0f, 200f)
+                                            viewModel.setVolumeBoostPercent(dragVolume)
                                         }
                                     }
                                 }
@@ -1198,33 +1201,33 @@ fun SmartVideoPlayerScreen(
                         val deltaSec = (seekDeltaMs / 1000L).toInt()
                         val deltaFormatted = if (deltaSec >= 0) "+${deltaSec}s" else "${deltaSec}s"
                         Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color(0xEE121216),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                            shadowElevation = 12.dp,
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xDD121216),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                            shadowElevation = 4.dp,
                             modifier = Modifier.align(Alignment.Center)
                         ) {
                             Column(
                                 modifier = Modifier
-                                    .padding(horizontal = 24.dp, vertical = 16.dp)
-                                    .width(220.dp),
+                                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                                    .widthIn(min = 130.dp, max = 165.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Icon(
                                         imageVector = if (isForward) Icons.Default.FastForward else Icons.Default.FastRewind,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(28.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                     Text(
                                         text = deltaFormatted,
                                         color = MaterialTheme.colorScheme.primary,
-                                        fontSize = 18.sp,
+                                        fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace
                                     )
@@ -1232,7 +1235,7 @@ fun SmartVideoPlayerScreen(
                                 Text(
                                     text = "${formatTime(seekPreviewMs)} / ${formatTime(duration)}",
                                     color = Color.White,
-                                    fontSize = 14.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium,
                                     fontFamily = FontFamily.Monospace
                                 )
@@ -1240,8 +1243,8 @@ fun SmartVideoPlayerScreen(
                                     progress = { (seekPreviewMs.toFloat() / duration.coerceAtLeast(1L)).coerceIn(0f, 1f) },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(4.dp)
-                                        .clip(RoundedCornerShape(2.dp)),
+                                        .height(3.dp)
+                                        .clip(RoundedCornerShape(1.5.dp)),
                                     color = MaterialTheme.colorScheme.primary,
                                     trackColor = Color.White.copy(alpha = 0.2f),
                                 )
@@ -1285,7 +1288,8 @@ fun SmartVideoPlayerScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .statusBarsPadding()
+                        .padding(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = { viewModel.handleBack() }) {
@@ -1353,26 +1357,6 @@ fun SmartVideoPlayerScreen(
                         Icon(
                             imageVector = Icons.Default.LockOpen,
                             contentDescription = "Lock Screen",
-                            tint = Color.White
-                        )
-                    }
-
-                    // Screen orientation toggle button
-                    IconButton(
-                        onClick = {
-                            toggleScreenOrientation()
-                            triggerOsd(
-                                OsdState(
-                                    icon = if (isLandscape) Icons.Default.StayCurrentPortrait else Icons.Default.StayCurrentLandscape,
-                                    title = "Orientation",
-                                    valueText = if (isLandscape) "Portrait" else "Landscape"
-                                )
-                            )
-                        }
-                    ) {
-                        Icon(
-                            imageVector = if (isLandscape) Icons.Default.StayCurrentPortrait else Icons.Default.StayCurrentLandscape,
-                            contentDescription = "Toggle Screen Orientation",
                             tint = Color.White
                         )
                     }
@@ -1542,10 +1526,11 @@ fun SmartVideoPlayerScreen(
                     shape = RoundedCornerShape(20.dp),
                     color = Color(0xDD121216),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-                    shadowElevation = 12.dp,
+                    shadowElevation = 8.dp,
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 ) {
                     Column(
@@ -1639,8 +1624,30 @@ fun SmartVideoPlayerScreen(
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                // Screen orientation toggle (Landscape / Portrait)
+                                IconButton(
+                                    onClick = {
+                                        toggleScreenOrientation()
+                                        triggerOsd(
+                                            OsdState(
+                                                icon = if (isLandscape) Icons.Default.StayCurrentPortrait else Icons.Default.StayCurrentLandscape,
+                                                title = "Orientation",
+                                                valueText = if (isLandscape) "Portrait" else "Landscape"
+                                            )
+                                        )
+                                    },
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isLandscape) Icons.Default.StayCurrentPortrait else Icons.Default.StayCurrentLandscape,
+                                        contentDescription = "Toggle Screen Orientation",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
                                 // Subtitles & Audio Selector
                                 IconButton(
                                     onClick = {
