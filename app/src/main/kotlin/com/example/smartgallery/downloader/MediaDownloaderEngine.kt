@@ -483,13 +483,19 @@ class MediaDownloaderEngine @Inject constructor(
             request.addOption("--force-keyframes-at-cuts")
             Log.i(TAG, "Configured timestamp clipper slice: $startHms to $endHms")
         } else {
-            // Aria2c multi-connection acceleration with resume flag
-            val connections = appSettings.downloadAria2cConnections.coerceIn(1, profiler.maxAria2cConnections)
-            request.addOption("--downloader", "libaria2c.so")
-            request.addOption(
-                "--downloader-args",
-                "aria2c:-c -j $connections -x $connections -s $connections -k 1M --auto-file-renaming=false --allow-overwrite=true"
-            )
+            // For non-YouTube direct streams, aria2c acceleration is supported;
+            // For YouTube / DASH streams, use yt-dlp's native concurrent fragment downloader (-N 4)
+            // to ensure maximum stability without external process exit-code failures.
+            if (!isYouTube) {
+                val connections = appSettings.downloadAria2cConnections.coerceIn(1, profiler.maxAria2cConnections)
+                request.addOption("--downloader", "libaria2c.so")
+                request.addOption(
+                    "--downloader-args",
+                    "aria2c:-c -j $connections -x $connections -s $connections -k 1M --auto-file-renaming=false --allow-overwrite=true"
+                )
+            } else {
+                request.addOption("-N", "4")
+            }
         }
 
         // Staging output template
@@ -513,9 +519,6 @@ class MediaDownloaderEngine @Inject constructor(
             fallbackRequest.addOption("-c")
             fallbackRequest.addOption("--no-check-certificates")
             fallbackRequest.addOption("--no-cache-dir")
-            if (isYouTube) {
-                fallbackRequest.addOption("--extractor-args", "youtube:player_client=android,web")
-            }
             if (appSettings.cookiesTxtContent.isNotBlank()) {
                 val cookiesFile = File(context.filesDir, "cookies.txt")
                 fallbackRequest.addOption("--cookies", cookiesFile.absolutePath)

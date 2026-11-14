@@ -11,5 +11,4 @@
 *.apk
 *.aab
 /app/release/output-metadata.json
-!release/app-arm64-v8a-release.apk
 

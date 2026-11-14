@@ -1,1 +1,1 @@
-6281ad1920ca05beed278692d6c483f3051fdd79085186a5a7e0ac757abfb320  app-arm64-v8a-release.apk
+389675294de4ec4f6bd24af892d5e18bb538fac7b3af93a8ecb72bcafe392898  app-arm64-v8a-release.apk

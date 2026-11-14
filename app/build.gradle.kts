@@ -198,10 +198,10 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
     implementation("org.tensorflow:tensorflow-lite-gpu-delegate-plugin:0.4.4")
 
-    // Embedded youtubedl-android (YoutubeDL + FFmpeg + Aria2c)
-    implementation("io.github.junkfood02.youtubedl-android:library:0.17.2")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.17.2")
-    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.17.2")
+    // Embedded youtubedl-android (YoutubeDL + FFmpeg + Aria2c with QuickJS JS runtime & 16KB support)
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.18.1")
 
     // Fast Hashing (xxHash64)
     implementation("net.openhft:zero-allocation-hashing:0.16")

@@ -121,19 +121,20 @@ When `fetchMediaInfo(url)` or `executeDownload(task)` was invoked:
 
 ## 5. Pinned Library Versions
 
-The downloader dependencies in `app/build.gradle.kts` are pinned to the same release line:
-- `io.github.junkfood02.youtubedl-android:library:0.17.2`
-- `io.github.junkfood02.youtubedl-android:ffmpeg:0.17.2`
-- `io.github.junkfood02.youtubedl-android:aria2c:0.17.2`
+The downloader dependencies in `app/build.gradle.kts` are pinned to the 0.18.1 release line with QuickJS and 16KB page alignment:
+- `io.github.junkfood02.youtubedl-android:library:0.18.1`
+- `io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1`
+- `io.github.junkfood02.youtubedl-android:aria2c:0.18.1`
 
 Native binaries packaged in `app-arm64-v8a-release.apk` (`lib/arm64-v8a/`):
 - `libpython.so` (4,384 bytes)
-- `libpython.zip.so` (11,698,164 bytes)
-- `libffmpeg.so` (312,184 bytes)
-- `libffmpeg.zip.so` (17,103,706 bytes)
-- `libffprobe.so` (231,272 bytes)
-- `libaria2c.so` (2,565,384 bytes)
-- `libaria2c.zip.so` (3,796,248 bytes)
+- `libpython.zip.so` (14,305,904 bytes)
+- `libffmpeg.so` (317,120 bytes)
+- `libffmpeg.zip.so` (35,624,931 bytes)
+- `libffprobe.so` (233,664 bytes)
+- `libaria2c.so` (2,540,656 bytes)
+- `libaria2c.zip.so` (4,296,181 bytes)
+- `libqjs.so` (916,104 bytes - QuickJS native JS challenge solver)
 
 ---
 
@@ -182,7 +183,7 @@ Per Ground Rule 5:
 | 3 | Cancel mid-download | **Pending Device** | `cancelProcess(taskId)` invokes `destroyProcessById("download_$taskId")` and deletes cache staging. |
 | 4 | Turn off Wi-Fi mid-download, turn it on | **Pending Device** | Mapped to `DownloadError.Network` (`isRetryable = true`) with UI 1-tap retry button. |
 | 5 | Force-stop app, reopen, download | **Pending Device** | `SmartGalleryApp.onCreate()` pre-warms on background thread, `ensureReady()` awaited by UI. Simulated via `ColdProcessRelaunchInstrumentedTest`. |
-| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`102,882,117 bytes`, SHA-256 `0b189d0a813a0adca0ad357e9a081f0247212a1b6997feed58985dff14d57c7f`) with updated yt-dlp `2026.10.26` binary preserved and synced, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson. |
+| 6 | Release APK, fresh install, download | **Pending Device** | Release APK compiled (`124,863,046 bytes`, SHA-256 `389675294de4ec4f6bd24af892d5e18bb538fac7b3af93a8ecb72bcafe392898`) with updated `0.18.1` engine, QuickJS (`libqjs.so`), 16KB page alignment, bundled yt-dlp binary synced, `useLegacyPackaging = true`, and R8 keep rules for `com.yausername.**` and Jackson. |
 | 7 | Invalid URL | **Unit Verified** | Unit tests confirm `DownloadError.UnsupportedSite` and `DownloadError.Unavailable` mapped without throwing unhandled exceptions. |
 
 ---
@@ -190,8 +191,8 @@ Per Ground Rule 5:
 ## 7. Release Artifacts
 
 - **APK File**: `release/app-arm64-v8a-release.apk`
-- **File Size**: `102,882,117 bytes` (~98.12 MB)
-- **SHA-256 Checksum**: `0b189d0a813a0adca0ad357e9a081f0247212a1b6997feed58985dff14d57c7f`
+- **File Size**: `124,863,046 bytes` (~119.08 MB)
+- **SHA-256 Checksum**: `389675294de4ec4f6bd24af892d5e18bb538fac7b3af93a8ecb72bcafe392898`
 - **Verification Task**: `./gradlew verifyRelease` -> `Checksum verification SUCCESS: Matches release-checksum.txt`
 
 ---
