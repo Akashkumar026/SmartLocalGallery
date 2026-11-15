@@ -57,8 +57,8 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a")
-            isUniversalApk = false
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = true
         }
     }
 

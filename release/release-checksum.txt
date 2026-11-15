@@ -1,1 +1,3 @@
-8b3da83a4966d80e1a92a643b33b23b78f382a2611d60fd7cf810a081ff6b77e  app-arm64-v8a-release.apk
+d1c0c68a0d91094c2c9871d11dd4823c97c7e0a1caa6b7997bbd2b28065ffdf9  app-arm64-v8a-release.apk
+99423cd35055c31409e7c6707db85ef5b67f823ef1126f09ec6b42a3bed5787f  app-armeabi-v7a-release.apk
+e991e8ff8a73122159fc15b3f71eb0d98b77cb79433bf3b21c473b9e09004729  app-universal-release.apk

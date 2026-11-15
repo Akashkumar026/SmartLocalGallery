@@ -62,8 +62,8 @@ class PlaybackService : MediaSessionService() {
     // â”€â”€ Core playback components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private lateinit var player: ExoPlayer
     private lateinit var mediaSession: MediaSession
-    private lateinit var loudnessEnhancer: LoudnessEnhancer
-    private lateinit var equalizer: Equalizer
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var equalizer: Equalizer? = null
     private var virtualizer: Virtualizer? = null
     private var dynamicsProcessing: DynamicsProcessing? = null
 
@@ -172,11 +172,27 @@ class PlaybackService : MediaSessionService() {
 
     private fun setupAudioEffects() {
         val sessionId = player.audioSessionId
-        loudnessEnhancer = LoudnessEnhancer(sessionId)
-        loudnessEnhancer.setEnabled(false)
+        if (sessionId <= 0) return
 
-        equalizer = Equalizer(0, sessionId)
-        equalizer.setEnabled(true)
+        try {
+            loudnessEnhancer?.release()
+            loudnessEnhancer = LoudnessEnhancer(sessionId).apply {
+                enabled = false
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "LoudnessEnhancer setup notice: ${e.message}")
+            loudnessEnhancer = null
+        }
+
+        try {
+            equalizer?.release()
+            equalizer = Equalizer(0, sessionId).apply {
+                enabled = true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Equalizer setup notice: ${e.message}")
+            equalizer = null
+        }
     }
 
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -248,16 +264,21 @@ class PlaybackService : MediaSessionService() {
                     val band    = args.getInt("band", 0)
                     val gainMb  = args.getInt("gainMb", 0)
                     val preamp  = args.getInt("preampMb", 0)
-                    // Update single band; retrieve current state from equalizer
-                    val current = IntArray(equalizer.numberOfBands.toInt()) { i ->
-                        equalizer.getBandLevel(i.toShort()).toInt()
-                    }
-                    if (band in current.indices) current[band] = gainMb
-                    applyEqualizer(current, preamp)
-                    // Persist updated bands
-                    scope.launch {
-                        settingsRepository.setEqBandGains(current)
-                        settingsRepository.setEqPreampMb(preamp)
+                    val eq = equalizer
+                    if (eq != null) {
+                        try {
+                            val current = IntArray(eq.numberOfBands.toInt()) { i ->
+                                eq.getBandLevel(i.toShort()).toInt()
+                            }
+                            if (band in current.indices) current[band] = gainMb
+                            applyEqualizer(current, preamp)
+                            scope.launch {
+                                settingsRepository.setEqBandGains(current)
+                                settingsRepository.setEqPreampMb(preamp)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error applying eq band: ${e.message}")
+                        }
                     }
                 }
 
@@ -343,8 +364,10 @@ class PlaybackService : MediaSessionService() {
                     player = newPlayer
 
                     // Re-attach audio effects
-                    loudnessEnhancer.release()
-                    equalizer.release()
+                    try { loudnessEnhancer?.release() } catch (_: Exception) {}
+                    try { equalizer?.release() } catch (_: Exception) {}
+                    loudnessEnhancer = null
+                    equalizer = null
                     setupAudioEffects()
                     Log.d(TAG, "Switched to software renderer after hardware error.")
                 } catch (e: Exception) {
@@ -386,31 +409,43 @@ class PlaybackService : MediaSessionService() {
      * [preampMb]    â€“ pre-amplification offset added to every band.
      */
     fun applyEqualizer(bandGainsMb: IntArray, preampMb: Int) {
-        val numBands = equalizer.numberOfBands.toInt()
-        for (i in 0 until numBands) {
-            val gain = if (i < bandGainsMb.size) bandGainsMb[i] + preampMb else preampMb
-            val clamped = gain.coerceIn(
-                equalizer.getBandLevelRange()[0].toInt(),
-                equalizer.getBandLevelRange()[1].toInt()
-            )
-            equalizer.setBandLevel(i.toShort(), clamped.toShort())
+        val eq = equalizer ?: return
+        try {
+            val numBands = eq.numberOfBands.toInt()
+            val range = eq.bandLevelRange
+            val minLevel = range[0].toInt()
+            val maxLevel = range[1].toInt()
+            for (i in 0 until numBands) {
+                val gain = if (i < bandGainsMb.size) bandGainsMb[i] + preampMb else preampMb
+                val clamped = gain.coerceIn(minLevel, maxLevel)
+                eq.setBandLevel(i.toShort(), clamped.toShort())
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "applyEqualizer notice: ${e.message}")
         }
     }
 
     /**
      * Apply loudness / volume boost.
-     * [percent] â€“ 0..100 â†’ attenuate/normal; 101..200 â†’ LoudnessEnhancer boost.
+     * [percent] – 0..100 → attenuate/normal; 101..200 → LoudnessEnhancer boost.
      */
     fun applyLoudnessBoost(percent: Float) {
-        if (percent <= 100f) {
-            loudnessEnhancer.setEnabled(false)
-            player.volume = (percent / 100f).coerceIn(0f, 1f)
-        } else {
-            player.volume = 1.0f
-            // Convert extra percentage points to millibels (each extra 1% â†’ 10 mB)
-            val boostMb = ((percent - 100f) * 10f).toInt()
-            loudnessEnhancer.setTargetGain(boostMb)
-            loudnessEnhancer.setEnabled(true)
+        try {
+            val le = loudnessEnhancer
+            if (percent <= 100f) {
+                le?.enabled = false
+                player.volume = (percent / 100f).coerceIn(0f, 1f)
+            } else {
+                player.volume = 1.0f
+                if (le != null) {
+                    // Convert extra percentage points to millibels (each extra 1% → 10 mB)
+                    val boostMb = ((percent - 100f) * 10f).toInt()
+                    le.setTargetGain(boostMb)
+                    le.enabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "applyLoudnessBoost notice: ${e.message}")
         }
     }
 
@@ -555,10 +590,12 @@ class PlaybackService : MediaSessionService() {
         audioManager.abandonAudioFocusRequest(audioFocusRequest)
         mediaSession.release()
         player.release()
-        loudnessEnhancer.release()
-        equalizer.release()
-        virtualizer?.release()
-        dynamicsProcessing?.release()
+        try { loudnessEnhancer?.release() } catch (_: Exception) {}
+        try { equalizer?.release() } catch (_: Exception) {}
+        loudnessEnhancer = null
+        equalizer = null
+        try { virtualizer?.release() } catch (_: Exception) {}
+        try { dynamicsProcessing?.release() } catch (_: Exception) {}
         scope.cancel()
         super.onDestroy()
     }

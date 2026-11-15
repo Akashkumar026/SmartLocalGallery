@@ -659,6 +659,15 @@ abstract class GalleryDatabase : RoomDatabase() {
                 )
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                     .fallbackToDestructiveMigration()
+                    .addCallback(object : RoomDatabase.Callback() {
+                        override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                            super.onOpen(db)
+                            try {
+                                db.query("PRAGMA busy_timeout = 30000").close()
+                                db.query("PRAGMA synchronous = NORMAL").close()
+                            } catch (_: Exception) {}
+                        }
+                    })
                     .build()
                 INSTANCE = instance
                 instance

@@ -56,10 +56,30 @@ class VaultAndFileManager @Inject constructor(
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .setRequestStrongBoxBacked(true)
                 .build()
-        } catch (_: Exception) {
-            MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
+        } catch (_: Throwable) {
+            try {
+                MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Hardware Keystore warning on device: ${t.message}")
+                try {
+                    MasterKey.Builder(context)
+                        .setKeyGenParameterSpec(
+                            android.security.keystore.KeyGenParameterSpec.Builder(
+                                "_smartgallery_master_key_compat_",
+                                android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+                            )
+                                .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                                .setKeySize(256)
+                                .build()
+                        )
+                        .build()
+                } catch (_: Throwable) {
+                    MasterKey.Builder(context).build()
+                }
+            }
         }
     }
 
@@ -479,39 +499,76 @@ class VaultAndFileManager @Inject constructor(
 
     suspend fun requestDeleteMedia(mediaItems: List<MediaItem>): DeleteResult = withContext(Dispatchers.IO) {
         if (mediaItems.isEmpty()) return@withContext DeleteResult.Success
-        val uris = mediaItems.map { it.contentUri }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val intentSender = MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
-                DeleteResult.RequiresUserConsent(intentSender)
-            } catch (e: Exception) {
-                DeleteResult.Error(e.message ?: "Failed to create delete request")
-            }
-        } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
-            for (item in mediaItems) {
+
+        val mediaStoreUrisNeedingConsent = mutableListOf<Uri>()
+
+        for (item in mediaItems) {
+            val file = File(item.absolutePath)
+            var deletedDirectly = false
+
+            // 1. Direct file deletion for non-MediaStore URIs or app-private storage
+            if (!item.contentUri.toString().startsWith("content://media/")) {
                 try {
-                    val count = context.contentResolver.delete(item.contentUri, null, null)
-                    if (count > 0) {
-                        db.mediaItemDao().deleteById(item.id)
+                    if (file.exists() && file.delete()) {
+                        deletedDirectly = true
                     }
-                } catch (rse: android.app.RecoverableSecurityException) {
-                    return@withContext DeleteResult.RequiresUserConsent(rse.userAction.actionIntent.intentSender)
-                } catch (e: Exception) {
-                    return@withContext DeleteResult.Error(e.message ?: "Failed to delete item")
-                }
-            }
-            DeleteResult.Success
-        } else {
-            for (item in mediaItems) {
-                try {
-                    context.contentResolver.delete(item.contentUri, null, null)
-                    val file = File(item.absolutePath)
-                    if (file.exists()) file.delete()
-                    db.mediaItemDao().deleteById(item.id)
                 } catch (_: Exception) {}
             }
-            DeleteResult.Success
+
+            // 2. Direct ContentResolver deletion (succeeds if owned by app or granted)
+            if (!deletedDirectly) {
+                try {
+                    val rows = context.contentResolver.delete(item.contentUri, null, null)
+                    if (rows > 0) {
+                        deletedDirectly = true
+                        if (file.exists()) try { file.delete() } catch (_: Exception) {}
+                    }
+                } catch (rse: android.app.RecoverableSecurityException) {
+                    if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                        return@withContext DeleteResult.RequiresUserConsent(rse.userAction.actionIntent.intentSender)
+                    }
+                } catch (se: SecurityException) {
+                    if (item.contentUri.scheme == "content" && item.contentUri.toString().startsWith("content://media/")) {
+                        mediaStoreUrisNeedingConsent.add(item.contentUri)
+                    }
+                } catch (_: Exception) {
+                    if (file.exists() && file.canWrite()) {
+                        try {
+                            if (file.delete()) deletedDirectly = true
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+
+            if (deletedDirectly) {
+                db.mediaItemDao().deleteById(item.id)
+                db.mediaFtsDao().delete(item.id)
+            }
         }
+
+        // 3. Prompt user consent for system MediaStore items on Android 11+ (API 30+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && mediaStoreUrisNeedingConsent.isNotEmpty()) {
+            try {
+                val intentSender = MediaStore.createDeleteRequest(
+                    context.contentResolver,
+                    mediaStoreUrisNeedingConsent
+                ).intentSender
+                return@withContext DeleteResult.RequiresUserConsent(intentSender)
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaStore.createDeleteRequest fallback: ${e.message}")
+                for (item in mediaItems) {
+                    try {
+                        val f = File(item.absolutePath)
+                        if (f.exists() && f.delete()) {
+                            db.mediaItemDao().deleteById(item.id)
+                            db.mediaFtsDao().delete(item.id)
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+
+        DeleteResult.Success
     }
 
     suspend fun onItemsDeletedFromStorage(items: List<MediaItem>) = withContext(Dispatchers.IO) {

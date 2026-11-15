@@ -170,10 +170,25 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun hasStorageAccess(ctx: Context = context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val hasImages = ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+            val hasVideos = ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
+            val hasVisualSelected = ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED
+            hasImages || hasVideos || hasVisualSelected
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasImages = ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+            val hasVideos = ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
+            hasImages || hasVideos
+        } else {
+            ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     fun startIndexing() {
         val missing = checkAndRequestPermissions(context)
-        if (missing.isNotEmpty()) {
-            Log.w("MainViewModel", "Skipping background indexing until permissions granted: $missing")
+        if (!hasStorageAccess(context)) {
+            Log.w("MainViewModel", "Skipping background indexing until storage permission granted: $missing")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -309,7 +324,11 @@ class MainViewModel @Inject constructor(
                 permissions.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
             }
         }
-        _pendingPermissions.value = permissions
+        if (hasStorageAccess(ctx)) {
+            _pendingPermissions.value = emptyList()
+        } else {
+            _pendingPermissions.value = permissions
+        }
         return permissions
     }
 

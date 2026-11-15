@@ -70,19 +70,49 @@ class LocalGalleryEngine @Inject constructor(
 
     suspend fun scanAllMedia(): Int = withContext(Dispatchers.IO) {
         var insertedCount = 0
-        insertedCount += scanMediaCollection(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            "IMAGE"
-        )
-        insertedCount += scanMediaCollection(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            "VIDEO"
-        )
-        insertedCount += scanMediaCollection(
-            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-            "AUDIO"
-        )
-        Log.i(TAG, "Completed full media scan. Total items processed/inserted: $insertedCount")
+        val imageUris = mutableSetOf<Uri>()
+        val videoUris = mutableSetOf<Uri>()
+        val audioUris = mutableSetOf<Uri>()
+
+        imageUris.add(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+        videoUris.add(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+        audioUris.add(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val volumes = MediaStore.getExternalVolumeNames(context)
+                for (vol in volumes) {
+                    imageUris.add(MediaStore.Images.Media.getContentUri(vol))
+                    videoUris.add(MediaStore.Video.Media.getContentUri(vol))
+                    audioUris.add(MediaStore.Audio.Media.getContentUri(vol))
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Notice querying external volume names: ${t.message}")
+            }
+        }
+
+        for (uri in imageUris) {
+            try {
+                insertedCount += scanMediaCollection(uri, "IMAGE")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error scanning image volume $uri: ${e.message}")
+            }
+        }
+        for (uri in videoUris) {
+            try {
+                insertedCount += scanMediaCollection(uri, "VIDEO")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error scanning video volume $uri: ${e.message}")
+            }
+        }
+        for (uri in audioUris) {
+            try {
+                insertedCount += scanMediaCollection(uri, "AUDIO")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error scanning audio volume $uri: ${e.message}")
+            }
+        }
+        Log.i(TAG, "Completed full media scan across ${imageUris.size} volumes. Total items processed/inserted: $insertedCount")
         insertedCount
     }
 
@@ -151,17 +181,19 @@ class LocalGalleryEngine @Inject constructor(
 
         while (hasMore) {
             try {
-                val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    val bundle = android.os.Bundle().apply {
-                        putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, pageSize)
-                        putInt(android.content.ContentResolver.QUERY_ARG_OFFSET, offset)
-                        putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.MediaColumns.DATE_ADDED))
-                        putInt(android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION, android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
-                    }
-                    context.contentResolver.query(collectionUri, projection, bundle, null)
-                } else {
-                    val sortOrder = "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT $pageSize OFFSET $offset"
-                    context.contentResolver.query(collectionUri, projection, null, null, sortOrder)
+                var cursor = queryMediaStoreBatch(collectionUri, projection, pageSize, offset)
+                // If initial projection failed on a custom OEM column, retry with safe base projection
+                if (cursor == null && projection.size > 7) {
+                    val fallbackProjection = arrayOf(
+                        MediaStore.MediaColumns._ID,
+                        MediaStore.MediaColumns.DISPLAY_NAME,
+                        MediaStore.MediaColumns.DATA,
+                        MediaStore.MediaColumns.MIME_TYPE,
+                        MediaStore.MediaColumns.SIZE,
+                        MediaStore.MediaColumns.DATE_ADDED,
+                        MediaStore.MediaColumns.DATE_MODIFIED
+                    )
+                    cursor = queryMediaStoreBatch(collectionUri, fallbackProjection, pageSize, offset)
                 }
 
                 if (cursor == null) {
@@ -405,6 +437,38 @@ class LocalGalleryEngine @Inject constructor(
             db.mediaItemDao().updateXxHash(item.id, hash)
         }
         hash
+    }
+
+    private fun queryMediaStoreBatch(
+        collectionUri: Uri,
+        projection: Array<String>,
+        pageSize: Int,
+        offset: Int
+    ): Cursor? {
+        val sortOrder = "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT $pageSize OFFSET $offset"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val bundle = android.os.Bundle().apply {
+                    putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, pageSize)
+                    putInt(android.content.ContentResolver.QUERY_ARG_OFFSET, offset)
+                    putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.MediaColumns.DATE_ADDED))
+                    putInt(android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION, android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                }
+                val cursor = context.contentResolver.query(collectionUri, projection, bundle, null)
+                if (cursor != null) return cursor
+            } catch (_: Throwable) {
+                // Fallback to sortOrder on OEM systems rejecting Bundle pagination
+            }
+        }
+        return try {
+            context.contentResolver.query(collectionUri, projection, null, null, sortOrder)
+        } catch (_: Throwable) {
+            try {
+                context.contentResolver.query(collectionUri, projection, null, null, "${MediaStore.MediaColumns.DATE_ADDED} DESC")
+            } catch (_: Throwable) {
+                null
+            }
+        }
     }
 
     fun decodeSubsampledBitmap(

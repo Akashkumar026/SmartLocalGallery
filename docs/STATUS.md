@@ -16,7 +16,8 @@ A full architectural audit, security overhaul, feature completion, and verificat
 - **Unit Test Suite**: `./gradlew testReleaseUnitTest` **100% PASSING (36/36 tests)**
 - **Release Verification**: Custom Gradle task `verifyRelease` active
 - **CI Automation**: GitHub Actions workflow `.github/workflows/android-ci.yml` deployed
-- **Release APK SHA-256**: `8b3da83a4966d80e1a92a643b33b23b78f382a2611d60fd7cf810a081ff6b77e`
+- **Release APK SHA-256 (arm64-v8a)**: `d1c0c68a0d91094c2c9871d11dd4823c97c7e0a1caa6b7997bbd2b28065ffdf9`
+- **Release APK SHA-256 (armeabi-v7a)**: `99423cd35055c31409e7c6707db85ef5b67f823ef1126f09ec6b42a3bed5787f`
 
 ---
 
