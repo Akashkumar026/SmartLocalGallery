@@ -54,16 +54,29 @@ class DownloadWorker @AssistedInject constructor(
         val task = db.downloadTaskDao().getByIdSync(taskId) ?: return@withContext Result.failure()
 
         val notifId = (NOTIFICATION_ID_BASE + (taskId % 1000)).toInt()
+
+        if (downloaderEngine.isTaskPaused(taskId)) {
+            android.util.Log.i("Downloader", "DownloadWorker: task $taskId is already marked PAUSED. Exiting cleanly.")
+            return@withContext Result.success()
+        }
+
         try {
             setForeground(createForegroundInfo(task.title, 0, notifId))
         } catch (t: Throwable) {
             android.util.Log.w("Downloader", "Could not elevate to foreground service: ${t.message}")
         }
 
+        if (downloaderEngine.isTaskPaused(taskId)) {
+            return@withContext Result.success()
+        }
         db.downloadTaskDao().updateStatus(taskId, "DOWNLOADING", null, null)
 
         try {
             val outputFile = downloaderEngine.executeDownload(task) { progress, downloadedBytes, totalBytes, speed, etaSecs ->
+                if (isStopped || downloaderEngine.isTaskPaused(taskId)) {
+                    downloaderEngine.pauseTask(taskId)
+                    return@executeDownload
+                }
                 val progressInt = progress.toInt()
                 val notification = buildNotification(task.title, progressInt, etaSecs)
                 val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -121,7 +134,31 @@ class DownloadWorker @AssistedInject constructor(
             // Show completion notification
             showCompletionNotification(task.title, notifId)
             Result.success()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val isPaused = e is DownloadPausedException ||
+                downloaderEngine.isTaskPaused(taskId) ||
+                (isStopped && db.downloadTaskDao().getByIdSync(taskId)?.status == "PAUSED")
+
+            if (isPaused) {
+                android.util.Log.i("Downloader", "DownloadWorker: Task $taskId is PAUSED gracefully.")
+                db.downloadTaskDao().updateStatus(taskId, "PAUSED", null, null)
+                nm.cancel(notifId)
+                return@withContext Result.success()
+            }
+
+            val isCancelled = e is DownloadCancelledException ||
+                downloaderEngine.isTaskCancelled(taskId) ||
+                (isStopped && db.downloadTaskDao().getByIdSync(taskId)?.status != "PAUSED")
+
+            if (isCancelled) {
+                android.util.Log.i("Downloader", "DownloadWorker: Task $taskId was CANCELLED gracefully.")
+                val stagingDir = File(appContext.cacheDir, "dl_staging/$taskId")
+                stagingDir.deleteRecursively()
+                nm.cancel(notifId)
+                return@withContext Result.success()
+            }
+
             android.util.Log.e("Downloader", "DownloadWorker execution failed for task $taskId: ${e.message}", e)
             val typedError = DownloadError.fromThrowable(e)
             val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"

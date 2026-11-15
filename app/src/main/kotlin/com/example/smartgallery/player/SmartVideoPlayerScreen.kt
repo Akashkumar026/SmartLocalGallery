@@ -1027,19 +1027,20 @@ fun SmartVideoPlayerScreen(
             exit = fadeOut(tween(250)) + scaleOut(tween(250), targetScale = 0.85f),
             modifier = Modifier
                 .align(osdState?.alignment ?: Alignment.Center)
-                .padding(32.dp)
+                .padding(24.dp)
         ) {
             osdState?.let { osd ->
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xDD1E1E1E),
-                    shadowElevation = 8.dp,
-                    modifier = Modifier.padding(8.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xB3141418),
+                    border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.18f)),
+                    shadowElevation = 0.dp,
+                    modifier = Modifier.padding(4.dp)
                 ) {
                     Column(
                         modifier = Modifier
-                            .padding(horizontal = 24.dp, vertical = 18.dp)
-                            .width(if (osd.progress != null) 160.dp else 130.dp),
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .widthIn(min = 85.dp, max = if (osd.progress != null) 130.dp else 110.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
@@ -1047,13 +1048,13 @@ fun SmartVideoPlayerScreen(
                             imageVector = osd.icon,
                             contentDescription = null,
                             tint = Color.White,
-                            modifier = Modifier.size(38.dp)
+                            modifier = Modifier.size(22.dp)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = osd.title,
                             color = Color.White,
-                            fontSize = 15.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center
                         )
@@ -1061,18 +1062,18 @@ fun SmartVideoPlayerScreen(
                             Text(
                                 text = osd.valueText,
                                 color = Color.White.copy(alpha = 0.75f),
-                                fontSize = 12.sp,
+                                fontSize = 11.sp,
                                 textAlign = TextAlign.Center
                             )
                         }
                         if (osd.progress != null) {
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
                             LinearProgressIndicator(
                                 progress = { osd.progress.coerceIn(0f, 1f) },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp)),
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(1.5.dp)),
                                 color = MaterialTheme.colorScheme.primary,
                                 trackColor = Color.White.copy(alpha = 0.2f),
                             )
@@ -1093,40 +1094,40 @@ fun SmartVideoPlayerScreen(
                 when (activeGesture) {
                     ActiveGesture.BRIGHTNESS -> {
                         Surface(
-                            shape = RoundedCornerShape(28.dp),
-                            color = Color(0xDD121216),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
-                            shadowElevation = 10.dp,
+                            shape = RoundedCornerShape(24.dp),
+                            color = Color(0xB3101014),
+                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.18f)),
+                            shadowElevation = 0.dp,
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
-                                .padding(start = 36.dp)
+                                .padding(start = 28.dp)
                         ) {
                             Column(
                                 modifier = Modifier
-                                    .padding(horizontal = 14.dp, vertical = 20.dp)
-                                    .width(44.dp),
+                                    .padding(horizontal = 10.dp, vertical = 16.dp)
+                                    .width(38.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.BrightnessMedium,
                                     contentDescription = "Brightness",
                                     tint = Color(0xFFFFD54F),
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                                 Box(
                                     modifier = Modifier
-                                        .width(6.dp)
-                                        .height(100.dp)
-                                        .clip(RoundedCornerShape(3.dp))
+                                        .width(5.dp)
+                                        .height(90.dp)
+                                        .clip(RoundedCornerShape(2.5.dp))
                                         .background(Color.White.copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.BottomCenter
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .width(6.dp)
+                                            .width(5.dp)
                                             .fillMaxHeight(fraction = localBrightness.coerceIn(0.01f, 1f))
-                                            .clip(RoundedCornerShape(3.dp))
+                                            .clip(RoundedCornerShape(2.5.dp))
                                             .background(Color(0xFFFFD54F))
                                     )
                                 }
@@ -1145,20 +1146,20 @@ fun SmartVideoPlayerScreen(
                         val boostColor = Color(0xFFFFB300)
                         val activeColor = if (isBoost) boostColor else MaterialTheme.colorScheme.primary
                         Surface(
-                            shape = RoundedCornerShape(28.dp),
-                            color = Color(0xDD121216),
-                            border = BorderStroke(1.dp, if (isBoost) boostColor.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.15f)),
-                            shadowElevation = 10.dp,
+                            shape = RoundedCornerShape(24.dp),
+                            color = Color(0xB3101014),
+                            border = BorderStroke(0.5.dp, if (isBoost) boostColor.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.18f)),
+                            shadowElevation = 0.dp,
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
-                                .padding(end = 36.dp)
+                                .padding(end = 28.dp)
                         ) {
                             Column(
                                 modifier = Modifier
-                                    .padding(horizontal = 14.dp, vertical = 20.dp)
-                                    .width(44.dp),
+                                    .padding(horizontal = 10.dp, vertical = 16.dp)
+                                    .width(38.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Icon(
                                     imageVector = when {
@@ -1168,21 +1169,21 @@ fun SmartVideoPlayerScreen(
                                     },
                                     contentDescription = "Volume",
                                     tint = activeColor,
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                                 Box(
                                     modifier = Modifier
-                                        .width(6.dp)
-                                        .height(100.dp)
-                                        .clip(RoundedCornerShape(3.dp))
+                                        .width(5.dp)
+                                        .height(90.dp)
+                                        .clip(RoundedCornerShape(2.5.dp))
                                         .background(Color.White.copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.BottomCenter
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .width(6.dp)
+                                            .width(5.dp)
                                             .fillMaxHeight(fraction = (volumeBoostPercent / 200f).coerceIn(0f, 1f))
-                                            .clip(RoundedCornerShape(3.dp))
+                                            .clip(RoundedCornerShape(2.5.dp))
                                             .background(activeColor)
                                     )
                                 }
@@ -1201,52 +1202,57 @@ fun SmartVideoPlayerScreen(
                         val deltaSec = (seekDeltaMs / 1000L).toInt()
                         val deltaFormatted = if (deltaSec >= 0) "+${deltaSec}s" else "${deltaSec}s"
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xDD121216),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-                            shadowElevation = 4.dp,
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xB3101014),
+                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.22f)),
+                            shadowElevation = 0.dp,
                             modifier = Modifier.align(Alignment.Center)
                         ) {
                             Column(
                                 modifier = Modifier
-                                    .padding(horizontal = 14.dp, vertical = 8.dp)
-                                    .widthIn(min = 130.dp, max = 165.dp),
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    .widthIn(min = 85.dp, max = 135.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Icon(
                                         imageVector = if (isForward) Icons.Default.FastForward else Icons.Default.FastRewind,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(13.dp)
                                     )
                                     Text(
                                         text = deltaFormatted,
                                         color = MaterialTheme.colorScheme.primary,
-                                        fontSize = 14.sp,
+                                        fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace
                                     )
+                                    Text(
+                                        text = "•",
+                                        color = Color.White.copy(alpha = 0.45f),
+                                        fontSize = 9.sp
+                                    )
+                                    Text(
+                                        text = "${formatTime(seekPreviewMs)} / ${formatTime(duration)}",
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        fontFamily = FontFamily.Monospace
+                                    )
                                 }
-                                Text(
-                                    text = "${formatTime(seekPreviewMs)} / ${formatTime(duration)}",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    fontFamily = FontFamily.Monospace
-                                )
                                 LinearProgressIndicator(
                                     progress = { (seekPreviewMs.toFloat() / duration.coerceAtLeast(1L)).coerceIn(0f, 1f) },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(3.dp)
-                                        .clip(RoundedCornerShape(1.5.dp)),
+                                        .height(2.dp)
+                                        .clip(RoundedCornerShape(1.dp)),
                                     color = MaterialTheme.colorScheme.primary,
-                                    trackColor = Color.White.copy(alpha = 0.2f),
+                                    trackColor = Color.White.copy(alpha = 0.15f),
                                 )
                             }
                         }
@@ -1524,9 +1530,9 @@ fun SmartVideoPlayerScreen(
                 // ── MODERN FLOATING BOTTOM CONTROL DECK ───────────────────────────
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = Color(0xDD121216),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-                    shadowElevation = 8.dp,
+                    color = Color(0xB3101014),
+                    border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.15f)),
+                    shadowElevation = 0.dp,
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)

@@ -160,5 +160,48 @@ class DownloaderEngineStateMachineTest {
         assertThat(thirdResult.isSuccess).isTrue()
         assertThat(fakeInitializer.ytdlInvocations.get()).isEqualTo(1)
     }
+
+    @Test
+    fun testPauseResumeCancelTaskLifecycle() {
+        val taskId = 42L
+        assertThat(engine.isTaskPaused(taskId)).isFalse()
+        assertThat(engine.isTaskCancelled(taskId)).isFalse()
+
+        // 1. Pause task
+        engine.pauseTask(taskId)
+        assertThat(engine.isTaskPaused(taskId)).isTrue()
+        assertThat(engine.isTaskCancelled(taskId)).isFalse()
+
+        // 2. Resume task
+        engine.resumeTask(taskId)
+        assertThat(engine.isTaskPaused(taskId)).isFalse()
+        assertThat(engine.isTaskCancelled(taskId)).isFalse()
+
+        // 3. Cancel task
+        engine.cancelTask(taskId)
+        assertThat(engine.isTaskCancelled(taskId)).isTrue()
+        assertThat(engine.isTaskPaused(taskId)).isFalse()
+
+        // 4. Resume clears cancel state
+        engine.resumeTask(taskId)
+        assertThat(engine.isTaskCancelled(taskId)).isFalse()
+        assertThat(engine.isTaskPaused(taskId)).isFalse()
+    }
+
+    @Test
+    fun testParseTotalBytesAndFormatBytes() {
+        val line1 = "[download]  45.2% of 15.23MiB at  2.41MiB/s ETA 00:03"
+        val totalBytes = MediaDownloaderEngine.parseTotalBytesFromLine(line1)
+        assertThat(totalBytes).isEqualTo((15.23 * 1024 * 1024).toLong())
+
+        val speed = MediaDownloaderEngine.parseSpeedBytes(line1)
+        assertThat(speed).isEqualTo((2.41 * 1024 * 1024).toLong())
+
+        val formattedSpeed = MediaDownloaderEngine.formatSpeed(speed)
+        assertThat(formattedSpeed).contains("2.4 MB/s")
+
+        val formattedBytes = MediaDownloaderEngine.formatBytes(totalBytes)
+        assertThat(formattedBytes).contains("15.2 MB")
+    }
 }
 

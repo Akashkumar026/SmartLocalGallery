@@ -39,6 +39,9 @@ sealed class EngineInitState {
     data class Failed(val error: Throwable) : EngineInitState()
 }
 
+class DownloadPausedException(val taskId: Long) : Exception("Download paused by user")
+class DownloadCancelledException(val taskId: Long) : Exception("Download cancelled by user")
+
 @Singleton
 class MediaDownloaderEngine @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -265,6 +268,29 @@ class MediaDownloaderEngine @Inject constructor(
                 else -> "$bytesPerSec B/s"
             }
         }
+
+        fun parseTotalBytesFromLine(line: String?): Long {
+            if (line.isNullOrBlank()) return 0L
+            val match = Regex("of\\s+~?([0-9.]+)\\s*([kKMmGg])i?B").find(line) ?: return 0L
+            val num = match.groupValues[1].toDoubleOrNull() ?: return 0L
+            val unit = match.groupValues[2].uppercase(Locale.ROOT)
+            return when (unit) {
+                "K" -> (num * 1024).toLong()
+                "M" -> (num * 1024 * 1024).toLong()
+                "G" -> (num * 1024 * 1024 * 1024).toLong()
+                else -> num.toLong()
+            }
+        }
+
+        fun formatBytes(bytes: Long): String {
+            if (bytes <= 0L) return ""
+            return when {
+                bytes >= 1024 * 1024 * 1024 -> String.format(Locale.ROOT, "%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+                bytes >= 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
+                bytes >= 1024 -> String.format(Locale.ROOT, "%d KB", bytes / 1024)
+                else -> "$bytes B"
+            }
+        }
     }
 
     data class MediaInfoResult(
@@ -320,16 +346,54 @@ class MediaDownloaderEngine @Inject constructor(
         )
     }
 
+    private val pausedTaskIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+    private val cancelledTaskIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
+    /**
+     * Pauses an active download task and stops its running process without deleting staging files.
+     */
+    fun pauseTask(taskId: Long) {
+        pausedTaskIds.add(taskId)
+        cancelledTaskIds.remove(taskId)
+        try {
+            val destroyed = YoutubeDL.getInstance().destroyProcessById("download_$taskId")
+            Log.i(TAG, "Paused download process download_$taskId (destroyed=$destroyed)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error stopping process on pause: ${t.message}")
+        }
+    }
+
+    /**
+     * Cancels an active download task and terminates its running process.
+     */
+    fun cancelTask(taskId: Long) {
+        cancelledTaskIds.add(taskId)
+        pausedTaskIds.remove(taskId)
+        try {
+            val destroyed = YoutubeDL.getInstance().destroyProcessById("download_$taskId")
+            Log.i(TAG, "Cancelled download process download_$taskId (destroyed=$destroyed)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error cancelling download process: ${t.message}")
+        }
+    }
+
+    /**
+     * Resumes or prepares a task for restart, clearing any pause or cancel state.
+     */
+    fun resumeTask(taskId: Long) {
+        pausedTaskIds.remove(taskId)
+        cancelledTaskIds.remove(taskId)
+        Log.i(TAG, "Resumed task $taskId: cleared pause/cancel state")
+    }
+
+    fun isTaskPaused(taskId: Long): Boolean = pausedTaskIds.contains(taskId)
+    fun isTaskCancelled(taskId: Long): Boolean = cancelledTaskIds.contains(taskId)
+
     /**
      * Gracefully terminates an active download process by task ID.
      */
     fun cancelProcess(taskId: Long) {
-        try {
-            YoutubeDL.getInstance().destroyProcessById("download_$taskId")
-            Log.i(TAG, "Successfully requested destruction of download process: download_$taskId")
-        } catch (t: Throwable) {
-            Log.w(TAG, "Error cancelling download process: ${t.message}")
-        }
+        cancelTask(taskId)
     }
 
     private fun getFfmpegBinary(): File {
@@ -369,6 +433,15 @@ class MediaDownloaderEngine @Inject constructor(
         val stagingDir = File(context.cacheDir, "dl_staging/${task.id}")
         if (!stagingDir.exists()) stagingDir.mkdirs()
 
+        if (isTaskPaused(task.id)) {
+            Log.i(TAG, "executeDownload: Task ${task.id} is marked PAUSED before start. Aborting.")
+            throw DownloadPausedException(task.id)
+        }
+        if (isTaskCancelled(task.id)) {
+            Log.i(TAG, "executeDownload: Task ${task.id} is marked CANCELLED before start. Aborting.")
+            throw DownloadCancelledException(task.id)
+        }
+
         val isAudio = task.mediaType.equals("AUDIO", ignoreCase = true) || task.quality.contains("Audio", ignoreCase = true)
         val isInstagram = task.url.contains("instagram.com", ignoreCase = true)
         val isMkv = task.quality.contains("mkv", ignoreCase = true)
@@ -406,10 +479,15 @@ class MediaDownloaderEngine @Inject constructor(
             request.addOption("--no-mtime")
 
             YoutubeDL.getInstance().execute(request, processTag) { progress, eta, line ->
+                if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+                if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
                 val pFloat = progress.coerceIn(0f, 90f)
                 val spd = parseSpeedBytes(line)
                 onProgress(pFloat, 0L, 0L, spd, eta.coerceAtLeast(0L))
             }
+
+            if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+            if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
 
             // Find downloaded intermediate file
             val tempFiles = stagingDir.listFiles { file -> file.name.startsWith("insta_temp_${task.id}") }
@@ -441,6 +519,9 @@ class MediaDownloaderEngine @Inject constructor(
             }
             val exitCode = proc.waitFor()
             sourceVideo.delete() // Clean up temporary video file
+
+            if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+            if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
 
             if (exitCode != 0 || !finalStagedAudio.exists()) {
                 throw RuntimeException("FFmpeg failed to extract Instagram audio (exit code: $exitCode)")
@@ -508,17 +589,32 @@ class MediaDownloaderEngine @Inject constructor(
         request.addOption("-o", outTemplate)
         request.addOption("--no-mtime")
 
-        var estimatedTotalBytes = 0L
+        var estimatedTotalBytes = task.totalBytes.coerceAtLeast(0L)
 
         try {
             YoutubeDL.getInstance().execute(request, processTag) { progress, eta, line ->
+                if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+                if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
                 val pFloat = progress.coerceIn(0f, 95f)
                 val etaSecs = eta.coerceAtLeast(0L)
                 val spd = parseSpeedBytes(line)
-                val downloaded = (estimatedTotalBytes * (pFloat / 100f)).toLong()
-                onProgress(pFloat, downloaded, estimatedTotalBytes, spd, etaSecs)
+                val parsedTotal = parseTotalBytesFromLine(line)
+                if (parsedTotal > 0L) estimatedTotalBytes = parsedTotal
+                val downloaded = if (estimatedTotalBytes > 0L) (estimatedTotalBytes * (pFloat / 100f)).toLong() else 0L
+                val stagedBytes = stagingDir.listFiles()?.sumOf { it.length() } ?: 0L
+                val actualDownloaded = if (downloaded > 0L) downloaded else stagedBytes
+                onProgress(pFloat, actualDownloaded, estimatedTotalBytes, spd, etaSecs)
             }
         } catch (e: Exception) {
+            if (isTaskPaused(task.id) || e is DownloadPausedException) {
+                Log.i(TAG, "Task ${task.id} paused by user during primary download pass.")
+                throw DownloadPausedException(task.id)
+            }
+            if (isTaskCancelled(task.id) || e is DownloadCancelledException) {
+                Log.i(TAG, "Task ${task.id} cancelled by user during primary download pass.")
+                throw DownloadCancelledException(task.id)
+            }
+
             Log.w(TAG, "Initial download pass failed: ${e.message}. Attempting resilient fallback 'best/bestvideo+bestaudio'")
             val fallbackRequest = YoutubeDLRequest(task.url)
             fallbackRequest.addOption("-c")
@@ -535,14 +631,35 @@ class MediaDownloaderEngine @Inject constructor(
             fallbackRequest.addOption("--no-mtime")
             fallbackRequest.addOption("--merge-output-format", if (isMkv) "mkv" else "mp4")
 
-            YoutubeDL.getInstance().execute(fallbackRequest, processTag) { progress, eta, line ->
-                val pFloat = progress.coerceIn(0f, 95f)
-                val etaSecs = eta.coerceAtLeast(0L)
-                val spd = parseSpeedBytes(line)
-                val downloaded = (estimatedTotalBytes * (pFloat / 100f)).toLong()
-                onProgress(pFloat, downloaded, estimatedTotalBytes, spd, etaSecs)
+            try {
+                YoutubeDL.getInstance().execute(fallbackRequest, processTag) { progress, eta, line ->
+                    if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+                    if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
+                    val pFloat = progress.coerceIn(0f, 95f)
+                    val etaSecs = eta.coerceAtLeast(0L)
+                    val spd = parseSpeedBytes(line)
+                    val parsedTotal = parseTotalBytesFromLine(line)
+                    if (parsedTotal > 0L) estimatedTotalBytes = parsedTotal
+                    val downloaded = if (estimatedTotalBytes > 0L) (estimatedTotalBytes * (pFloat / 100f)).toLong() else 0L
+                    val stagedBytes = stagingDir.listFiles()?.sumOf { it.length() } ?: 0L
+                    val actualDownloaded = if (downloaded > 0L) downloaded else stagedBytes
+                    onProgress(pFloat, actualDownloaded, estimatedTotalBytes, spd, etaSecs)
+                }
+            } catch (fallbackEx: Exception) {
+                if (isTaskPaused(task.id) || fallbackEx is DownloadPausedException) {
+                    Log.i(TAG, "Task ${task.id} paused by user during fallback pass.")
+                    throw DownloadPausedException(task.id)
+                }
+                if (isTaskCancelled(task.id) || fallbackEx is DownloadCancelledException) {
+                    Log.i(TAG, "Task ${task.id} cancelled by user during fallback pass.")
+                    throw DownloadCancelledException(task.id)
+                }
+                throw fallbackEx
             }
         }
+
+        if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+        if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
 
         // Locate downloaded staged file
         val stagedFiles = stagingDir.listFiles { file -> file.isFile && file.length() > 0 }?.sortedByDescending { it.lastModified() }

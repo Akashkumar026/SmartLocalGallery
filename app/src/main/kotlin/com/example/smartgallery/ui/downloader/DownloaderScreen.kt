@@ -26,6 +26,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
 import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import coil3.compose.AsyncImage
@@ -42,6 +43,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import javax.inject.Inject
@@ -201,12 +203,17 @@ class DownloaderViewModel @Inject constructor(
                 createdAt = System.currentTimeMillis()
             )
             val taskId = db.downloadTaskDao().insert(task)
+            engine.resumeTask(taskId)
 
             val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
                 .addTag("download_$taskId")
                 .setInputData(Data.Builder().putLong(DownloadWorker.KEY_TASK_ID, taskId).build())
                 .build()
-            WorkManager.getInstance(context).enqueue(workRequest)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "download_$taskId",
+                ExistingWorkPolicy.REPLACE,
+                workRequest
+            )
 
             mediaInfo = null
             urlInput = ""
@@ -250,13 +257,18 @@ class DownloaderViewModel @Inject constructor(
                 createdAt = System.currentTimeMillis()
             )
             val taskId = db.downloadTaskDao().insert(task)
+            engine.resumeTask(taskId)
 
-            // Enqueue WorkManager job with unique tag
+            // Enqueue WorkManager job with unique name and REPLACE policy
             val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
                 .addTag("download_$taskId")
                 .setInputData(Data.Builder().putLong(DownloadWorker.KEY_TASK_ID, taskId).build())
                 .build()
-            WorkManager.getInstance(context).enqueue(workRequest)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "download_$taskId",
+                ExistingWorkPolicy.REPLACE,
+                workRequest
+            )
 
             // Reset inspect form
             mediaInfo = null
@@ -266,7 +278,8 @@ class DownloaderViewModel @Inject constructor(
 
     fun pauseDownload(task: DownloadTask) {
         viewModelScope.launch {
-            engine.cancelProcess(task.id)
+            engine.pauseTask(task.id)
+            WorkManager.getInstance(context).cancelUniqueWork("download_${task.id}")
             WorkManager.getInstance(context).cancelAllWorkByTag("download_${task.id}")
             db.downloadTaskDao().updateStatus(task.id, "PAUSED", null, null)
         }
@@ -280,18 +293,27 @@ class DownloaderViewModel @Inject constructor(
 
     fun resumeDownload(task: DownloadTask) {
         viewModelScope.launch {
+            engine.resumeTask(task.id)
             db.downloadTaskDao().updateStatus(task.id, "QUEUED", null, null)
             val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
                 .addTag("download_${task.id}")
                 .setInputData(Data.Builder().putLong(DownloadWorker.KEY_TASK_ID, task.id).build())
                 .build()
-            WorkManager.getInstance(context).enqueue(workRequest)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "download_${task.id}",
+                ExistingWorkPolicy.REPLACE,
+                workRequest
+            )
         }
     }
 
     fun deleteTask(task: DownloadTask) {
         viewModelScope.launch {
+            engine.cancelTask(task.id)
+            WorkManager.getInstance(context).cancelUniqueWork("download_${task.id}")
             WorkManager.getInstance(context).cancelAllWorkByTag("download_${task.id}")
+            val stagingDir = File(context.cacheDir, "dl_staging/${task.id}")
+            stagingDir.deleteRecursively()
             db.downloadTaskDao().delete(task)
         }
     }
@@ -917,21 +939,54 @@ fun DownloaderScreen(
                                 }
                             }
 
-                            if (task.status == "DOWNLOADING") {
+                            if (task.status == "DOWNLOADING" || task.status == "PAUSED" || task.status == "QUEUED") {
                                 Spacer(Modifier.height(8.dp))
-                                LinearProgressIndicator(
-                                    progress = { task.progress / 100f },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                if (task.status == "QUEUED") {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                } else {
+                                    LinearProgressIndicator(
+                                        progress = { (task.progress / 100f).coerceIn(0f, 1f) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = if (task.status == "PAUSED") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+                                    )
+                                }
                                 Spacer(Modifier.height(4.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    val spdText = if (task.speedBytesPerSec > 0) " • ${MediaDownloaderEngine.formatSpeed(task.speedBytesPerSec)}" else ""
-                                    Text("${task.progress.toInt()}%$spdText", style = MaterialTheme.typography.bodySmall)
-                                    if (task.etaSeconds > 0) {
-                                        Text("ETA: ${task.etaSeconds}s", style = MaterialTheme.typography.bodySmall)
+                                    if (task.status == "PAUSED") {
+                                        Text(
+                                            text = "${task.progress.toInt()}% • Paused (tap Play to continue)",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.secondary,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        if (task.downloadedBytes > 0L) {
+                                            Text(
+                                                text = MediaDownloaderEngine.formatBytes(task.downloadedBytes),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    } else if (task.status == "QUEUED") {
+                                        Text(
+                                            text = "Queued in background...",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color.Gray
+                                        )
+                                    } else {
+                                        val spdText = if (task.speedBytesPerSec > 0) " • ${MediaDownloaderEngine.formatSpeed(task.speedBytesPerSec)}" else ""
+                                        val sizeText = if (task.totalBytes > 0L) {
+                                            " (${MediaDownloaderEngine.formatBytes(task.downloadedBytes)} / ${MediaDownloaderEngine.formatBytes(task.totalBytes)})"
+                                        } else if (task.downloadedBytes > 0L) {
+                                            " (${MediaDownloaderEngine.formatBytes(task.downloadedBytes)})"
+                                        } else ""
+                                        Text("${task.progress.toInt()}%$spdText$sizeText", style = MaterialTheme.typography.bodySmall)
+                                        if (task.etaSeconds > 0) {
+                                            Text("ETA: ${task.etaSeconds}s", style = MaterialTheme.typography.bodySmall)
+                                        }
                                     }
                                 }
                             }
