@@ -3,25 +3,31 @@
 A modern, production-grade Android Gallery, Cinema Media Player, Universal Downloader, and Encrypted Vault built with **Jetpack Compose**, **AndroidX Media3 (ExoPlayer)**, **LibVLC 3.7.5 Universal Fallback**, **100% Offline ML Kit**, and **Hardware-Backed AES-256-GCM Encryption**.
 
 [![Release](https://img.shields.io/badge/Release-v3.0.0-blue.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.0.0)
-[![Direct Download APK](https://img.shields.io/badge/Download-APK%20v3.0.0%20(All%20Devices)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/app-arm64-v8a-release.apk)
+[![Direct Download Universal APK](https://img.shields.io/badge/Download-Universal%20APK%20(All%20Devices)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/SmartLocalGallery-v3.0.0-Universal-All-Devices.apk)
 [![compileSdk](https://img.shields.io/badge/compileSdk-35-orange.svg)]()
 [![minSdk](https://img.shields.io/badge/minSdk-26-yellow.svg)]()
 
 ---
 
-## 📥 Direct APK Download (Optimized for ALL Brands & Devices)
+## 📥 Direct APK Downloads (Universal & Multi-Architecture)
 
 Download the production-ready APK directly from the official GitHub Release:
 
-- 🚀 **[Download v3.0.0 (arm64-v8a) — For modern Samsung, Xiaomi, Vivo, Oppo, Pixel](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/app-arm64-v8a-release.apk)**
-- 📱 **[Download v3.0.0 (armeabi-v7a) — For budget 32-bit Samsung Galaxy A & M series](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/app-armeabi-v7a-release.apk)**
+- 🌟 **[Download v3.0.0 Universal APK (Recommended for ALL Mobile Models)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/SmartLocalGallery-v3.0.0-Universal-All-Devices.apk)**
+  - *Compatible with 100% of Android devices (Samsung, Xiaomi, Vivo, Oppo, Realme, OnePlus, Motorola, Pixel, Tecno, Infinix, etc.)*
+- 🚀 **[Download v3.0.0 (arm64-v8a) — For modern 64-bit devices](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/SmartLocalGallery-v3.0.0-arm64-v8a.apk)**
+- 📱 **[Download v3.0.0 (armeabi-v7a) — For budget 32-bit Samsung Galaxy A & M series](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.0.0/SmartLocalGallery-v3.0.0-armeabi-v7a.apk)**
 - 🏷️ **[View GitHub Release v3.0.0 Assets & Notes](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.0.0)**
 
 ### 🛡️ Build Verification Details
 - **Version**: `3.0.0` (versionCode `3`)
-- **arm64-v8a APK**: `124,893,298 bytes` | SHA-256: `d1c0c68a0d91094c2c9871d11dd4823c97c7e0a1caa6b7997bbd2b28065ffdf9`
-- **armeabi-v7a APK**: `110,804,852 bytes` | SHA-256: `99423cd35055c31409e7c6707db85ef5b67f823ef1126f09ec6b42a3bed5787f`
-- **Universal Compatibility**: Android 8.0+ (API 26–35) across Samsung, Xiaomi, OnePlus, Vivo, Oppo, Realme, Motorola, Google Pixel
+- **Universal APK (`SmartLocalGallery-v3.0.0-Universal-All-Devices.apk`)**: `209,644,050 bytes` (~199.93 MB)
+  - SHA-256: `e040e5fc9a7e0107bbfe00d43f912e6e411529ef5ce20825f1c756235aa30094`
+- **64-bit APK (`SmartLocalGallery-v3.0.0-arm64-v8a.apk`)**: `124,893,298 bytes` (~119.11 MB)
+  - SHA-256: `4a623b8f309935cabdf6ace669ebbcbd2b2bc8e728d7eb13a3c7d1666f2dff6a`
+- **32-bit APK (`SmartLocalGallery-v3.0.0-armeabi-v7a.apk`)**: `110,804,852 bytes` (~105.67 MB)
+  - SHA-256: `014194d6a724bfe8f158317a7b1d92332b052a5d0a3ac33bda276a87e04e61e1`
+- **Platform Support**: Android 8.0+ (API 26–35) across ALL mobile manufacturers
 
 ---
 
