@@ -370,6 +370,14 @@ class MediaDownloaderEngine @Inject constructor(
         }
     }
 
+    data class AvailableResolution(
+        val height: Int,
+        val label: String, // e.g. "4K (2160p)", "1440p", "1080p", "720p", "480p", "360p"
+        val hasHighFps: Boolean, // fps >= 50
+        val maxFps: Int,
+        val estimatedBytes: Long = 0L
+    )
+
     data class MediaInfoResult(
         val url: String,
         val title: String,
@@ -377,7 +385,11 @@ class MediaDownloaderEngine @Inject constructor(
         val durationMs: Long,
         val thumbnailUrl: String,
         val isInstagram: Boolean,
-        val availableFormats: List<String>
+        val availableFormats: List<String>,
+        val availableResolutions: List<AvailableResolution>,
+        val maxResolutionHeight: Int,
+        val maxFps: Int,
+        val estimatedTotalBytes: Long
     )
 
     /**
@@ -410,7 +422,89 @@ class MediaDownloaderEngine @Inject constructor(
         val durationSeconds = info.duration.toLong()
         val durationMs = durationSeconds * 1000L
 
-        val formats = listOf("4K (2160p)", "1440p", "1080p", "720p", "480p", "Audio Only (MP3)", "Audio Only (M4A)")
+        val formatsList = info.formats ?: emptyList()
+        val validVideoFormats = formatsList.filter { fmt ->
+            val vcodec = fmt.vcodec
+            vcodec != null && !vcodec.equals("none", ignoreCase = true) && fmt.height > 0
+        }
+
+        val standardHeights = listOf(2160, 1440, 1080, 720, 480, 360, 240)
+        val availableResList = mutableListOf<AvailableResolution>()
+
+        for (stdHeight in standardHeights) {
+            val matching = validVideoFormats.filter { it.height == stdHeight }
+            if (matching.isNotEmpty()) {
+                val maxFps = matching.maxOfOrNull { it.fps } ?: 30
+                val size = matching.mapNotNull {
+                    if (it.fileSize > 0) it.fileSize
+                    else if (it.fileSizeApproximate > 0) it.fileSizeApproximate
+                    else null
+                }.maxOrNull() ?: 0L
+                val label = when (stdHeight) {
+                    2160 -> "4K (2160p)"
+                    1440 -> "1440p (2K)"
+                    1080 -> "1080p (FHD)"
+                    720 -> "720p (HD)"
+                    480 -> "480p (SD)"
+                    360 -> "360p"
+                    else -> "${stdHeight}p"
+                }
+                availableResList.add(
+                    AvailableResolution(
+                        height = stdHeight,
+                        label = label,
+                        hasHighFps = maxFps >= 50,
+                        maxFps = maxFps,
+                        estimatedBytes = size
+                    )
+                )
+            }
+        }
+
+        // If no standard height matched but valid formats exist
+        if (availableResList.isEmpty() && validVideoFormats.isNotEmpty()) {
+            val distinctHeights = validVideoFormats.map { it.height }.distinct().sortedDescending()
+            for (h in distinctHeights) {
+                val matching = validVideoFormats.filter { it.height == h }
+                val maxFps = matching.maxOfOrNull { it.fps } ?: 30
+                val size = matching.mapNotNull {
+                    if (it.fileSize > 0) it.fileSize
+                    else if (it.fileSizeApproximate > 0) it.fileSizeApproximate
+                    else null
+                }.maxOrNull() ?: 0L
+                availableResList.add(
+                    AvailableResolution(
+                        height = h,
+                        label = "${h}p",
+                        hasHighFps = maxFps >= 50,
+                        maxFps = maxFps,
+                        estimatedBytes = size
+                    )
+                )
+            }
+        }
+
+        // Fallback for direct streams or empty formats
+        if (availableResList.isEmpty()) {
+            val h = info.height.takeIf { it > 0 } ?: 1080
+            availableResList.add(
+                AvailableResolution(
+                    height = h,
+                    label = if (h >= 2160) "4K (2160p)" else "${h}p",
+                    hasHighFps = false,
+                    maxFps = 30,
+                    estimatedBytes = info.fileSize.takeIf { it > 0 } ?: info.fileSizeApproximate
+                )
+            )
+        }
+
+        val maxHeight = availableResList.maxOfOrNull { it.height } ?: 1080
+        val overallMaxFps = availableResList.maxOfOrNull { it.maxFps } ?: 30
+        val overallEstBytes = if (info.fileSize > 0) info.fileSize
+            else if (info.fileSizeApproximate > 0) info.fileSizeApproximate
+            else availableResList.firstOrNull()?.estimatedBytes ?: 0L
+
+        val formats = availableResList.map { it.label } + listOf("Audio Only (MP3)", "Audio Only (M4A)")
 
         MediaInfoResult(
             url = url,
@@ -419,9 +513,18 @@ class MediaDownloaderEngine @Inject constructor(
             durationMs = durationMs,
             thumbnailUrl = info.thumbnail ?: "",
             isInstagram = isInsta,
-            availableFormats = formats
+            availableFormats = formats,
+            availableResolutions = availableResList,
+            maxResolutionHeight = maxHeight,
+            maxFps = overallMaxFps,
+            estimatedTotalBytes = overallEstBytes
         )
     }
+
+    /**
+     * Backward-compatible alias for fetchMediaInfo.
+     */
+    suspend fun getVideoInfo(url: String): MediaInfoResult = fetchMediaInfo(url)
 
     private val pausedTaskIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
     private val cancelledTaskIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
@@ -673,11 +776,20 @@ class MediaDownloaderEngine @Inject constructor(
                     task.quality.contains("1080", true) -> 1080
                     task.quality.contains("720", true) -> 720
                     task.quality.contains("480", true) -> 480
+                    task.quality.contains("360", true) -> 360
                     else -> 1080
                 }
+                val prefer60 = task.quality.contains("60fps", ignoreCase = true) || !task.quality.contains("30fps", ignoreCase = true)
                 val mergeContainer = if (isMkv) "mkv" else "mp4"
-                req.addOption("-f", "bestvideo[height<=$heightLimit][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best")
+
+                val formatSelector = if (prefer60) {
+                    "bestvideo[height<=$heightLimit][fps>=50][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit][fps>=50]+bestaudio/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                } else {
+                    "bestvideo[height<=$heightLimit][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                }
+                req.addOption("-f", formatSelector)
                 req.addOption("--merge-output-format", mergeContainer)
+                req.addOption("--postprocessor-args", "Merger:-c copy")
                 req.addOption("--add-metadata")
             }
 
@@ -810,6 +922,34 @@ class MediaDownloaderEngine @Inject constructor(
         val stagedFile = stagedFiles?.firstOrNull()
             ?: throw IllegalStateException("Download completed but no output file was created in cache staging")
 
+        // Optional 30fps -> 60fps fast conversion if requested
+        if (!isAudio && task.quality.contains("convert60", ignoreCase = true)) {
+            val ffmpegBin = getFfmpegBinary()
+            val convertedFile = File(stagingDir, "60fps_${stagedFile.name}")
+            val ffmpegCmd = listOf(
+                ffmpegBin.absolutePath,
+                "-y",
+                "-i", stagedFile.absolutePath,
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "20",
+                "-r", "60",
+                "-c:a", "copy",
+                convertedFile.absolutePath
+            )
+            try {
+                val proc = ProcessBuilder(ffmpegCmd).redirectErrorStream(true).start()
+                val exit = proc.waitFor()
+                if (exit == 0 && convertedFile.exists() && convertedFile.length() > 0L) {
+                    stagedFile.delete()
+                    convertedFile.renameTo(stagedFile)
+                    Log.i(TAG, "Fast 60fps conversion completed successfully.")
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Optional 60fps conversion notice: ${t.message}, proceeding with original stream.")
+            }
+        }
+
         onProgress(95f, stagedFile.length(), stagedFile.length(), 0L, 0L)
 
         // Stream from staging into public MediaStore via ContentResolver Scoped Storage pipeline
@@ -828,7 +968,7 @@ class MediaDownloaderEngine @Inject constructor(
 
     /**
      * Copies staged file from internal cache to public MediaStore (Movies/SmartGallery or Music/SmartGallery)
-     * using ContentResolver and IS_PENDING.
+     * using ContentResolver, openFileDescriptor, and high-performance buffered NIO FileChannel.transferTo().
      */
     private suspend fun moveStagedFileToMediaStore(stagedFile: File, isAudio: Boolean): File = withContext(Dispatchers.IO) {
         val collectionUri = if (isAudio) {
@@ -861,12 +1001,24 @@ class MediaDownloaderEngine @Inject constructor(
         val targetUri = context.contentResolver.insert(collectionUri, values)
             ?: throw IllegalStateException("Failed to create MediaStore entry in $relativeFolder")
 
+        val pfd = context.contentResolver.openFileDescriptor(targetUri, "w")
+            ?: throw IllegalStateException("Failed to open FileDescriptor to MediaStore URI: $targetUri")
+
         try {
-            context.contentResolver.openOutputStream(targetUri)?.use { outStream ->
-                stagedFile.inputStream().use { inStream ->
-                    inStream.copyTo(outStream)
+            java.io.FileInputStream(stagedFile).use { inStream ->
+                java.io.FileOutputStream(pfd.fileDescriptor).use { outStream ->
+                    val inChannel = inStream.channel
+                    val outChannel = outStream.channel
+                    var transferred = 0L
+                    val totalSize = stagedFile.length()
+                    while (transferred < totalSize) {
+                        val count = inChannel.transferTo(transferred, 1024L * 1024L * 8L, outChannel) // 8MB buffered chunks
+                        if (count <= 0) break
+                        transferred += count
+                    }
+                    outChannel.force(true)
                 }
-            } ?: throw IllegalStateException("Failed to open output stream to MediaStore URI: $targetUri")
+            }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 values.clear()
@@ -876,6 +1028,8 @@ class MediaDownloaderEngine @Inject constructor(
         } catch (e: Exception) {
             context.contentResolver.delete(targetUri, null, null)
             throw e
+        } finally {
+            try { pfd.close() } catch (_: Throwable) {}
         }
 
         val destinationDir = if (isAudio) {

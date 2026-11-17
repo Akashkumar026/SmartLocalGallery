@@ -55,9 +55,9 @@ class DeviceCapabilityProfiler @Inject constructor(
         isLowRamDevice = activityManager.isLowRamDevice
 
         deviceTier = when {
-            isLowRamDevice || totalRamGb <= 4.1f || cpuCores <= 4 -> DeviceTier.TIER_LOW
-            totalRamGb <= 8.1f -> DeviceTier.TIER_MID
-            else -> if (cpuCores >= 8) DeviceTier.TIER_HIGH else DeviceTier.TIER_MID
+            isLowRamDevice || totalRamGb < 4.0f || cpuCores <= 4 -> DeviceTier.TIER_LOW
+            totalRamGb < 7.8f || cpuCores < 8 -> DeviceTier.TIER_MID
+            else -> DeviceTier.TIER_HIGH
         }
 
         Log.i(
@@ -140,8 +140,15 @@ class DeviceCapabilityProfiler @Inject constructor(
 
     val preferredBitmapConfig: Bitmap.Config
         get() = when (deviceTier) {
-            DeviceTier.TIER_LOW, DeviceTier.TIER_MID -> Bitmap.Config.RGB_565
-            DeviceTier.TIER_HIGH -> Bitmap.Config.ARGB_8888
+            DeviceTier.TIER_LOW -> Bitmap.Config.RGB_565
+            DeviceTier.TIER_MID, DeviceTier.TIER_HIGH -> Bitmap.Config.ARGB_8888
+        }
+
+    val maxAiBitmapDimension: Int
+        get() = when (deviceTier) {
+            DeviceTier.TIER_LOW -> 640
+            DeviceTier.TIER_MID -> 1080
+            DeviceTier.TIER_HIGH -> 1920
         }
 
     val crossfadeDurationMs: Int
@@ -178,10 +185,18 @@ class DeviceCapabilityProfiler @Inject constructor(
         get() = if (shouldThrottleBackgroundTasks.value || deviceTier == DeviceTier.TIER_LOW) 25 else 100
 
     val aiWorkerParallelism: Int
-        get() = if (shouldThrottleBackgroundTasks.value || deviceTier == DeviceTier.TIER_LOW) 1 else 2
+        get() = if (shouldThrottleBackgroundTasks.value) 1 else when (deviceTier) {
+            DeviceTier.TIER_LOW -> 1
+            DeviceTier.TIER_MID -> 2
+            DeviceTier.TIER_HIGH -> 4
+        }
 
     val aiWorkerYieldInterval: Int
-        get() = if (shouldThrottleBackgroundTasks.value || deviceTier == DeviceTier.TIER_LOW) 5 else 15
+        get() = if (shouldThrottleBackgroundTasks.value) 3 else when (deviceTier) {
+            DeviceTier.TIER_LOW -> 3
+            DeviceTier.TIER_MID -> 10
+            DeviceTier.TIER_HIGH -> 25
+        }
 
     val aiBreathingDelayMs: Long
         get() = if (shouldThrottleBackgroundTasks.value) 150L else 0L

@@ -625,6 +625,7 @@ fun SmartVideoPlayerScreen(
                         if (playerView.player !== exoPlayer) {
                             playerView.player = exoPlayer
                         }
+                        playerView.onResume()
                         playerView.resizeMode = when (aspectRatioMode) {
                             "FIT" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                             "FILL" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
@@ -768,7 +769,7 @@ fun SmartVideoPlayerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(screenLocked) {
+                    .pointerInput(screenLocked, containerSize) {
                         val touchSlop = viewConfiguration.touchSlop
                         var lastTapTime = 0L
                         var lastTapPos = Offset.Zero
@@ -888,14 +889,14 @@ fun SmartVideoPlayerScreen(
                                             seekDeltaMs = deltaMs
                                         }
                                         isVerticalBrightness -> {
-                                            val deltaFraction = -deltaY / screenHeight
-                                            dragBrightness = (dragBrightness + deltaFraction * 1.0f).coerceIn(0.01f, 1.0f)
+                                            val deltaFraction = -deltaY / screenHeight.coerceAtLeast(1f)
+                                            dragBrightness = (dragBrightness + deltaFraction * 0.85f).coerceIn(0.01f, 1.0f)
                                             localBrightness = dragBrightness
                                             setWindowBrightness(activity, localBrightness)
                                         }
                                         isVerticalVolume -> {
-                                            val deltaFraction = -deltaY / screenHeight
-                                            dragVolume = (dragVolume + deltaFraction * 100f).coerceIn(0f, 200f)
+                                            val deltaFraction = -deltaY / screenHeight.coerceAtLeast(1f)
+                                            dragVolume = (dragVolume + deltaFraction * 80f).coerceIn(0f, 200f)
                                             viewModel.setVolumeBoostPercent(dragVolume)
                                         }
                                     }
@@ -1834,8 +1835,18 @@ fun SmartVideoPlayerScreen(
             abRepeatAMs = abRepeatAMs,
             abRepeatBMs = abRepeatBMs,
             currentPosition = currentPosition,
+            duration = duration,
+            aspectRatioMode = aspectRatioMode,
             colorFilters = colorFilters,
             showCodecHud = showCodecHud,
+            onSetAspectRatio = { mode ->
+                viewModel.setAspectRatio(mode)
+            },
+            onOpenSubtitlesAudio = { tab ->
+                showPlayerSettingsSheet = false
+                subtitleAudioSheetTab = tab
+                showSubtitleAudioSheet = true
+            },
             onColorFiltersChange = { colorFilters = it },
             onToggleCodecHud = { viewModel.toggleCodecHud() },
             onOpenEqualizer = {
@@ -3189,8 +3200,12 @@ fun PlayerSettingsSheet(
     abRepeatAMs: Long,
     abRepeatBMs: Long,
     currentPosition: Long,
+    duration: Long = 0L,
+    aspectRatioMode: String = "FIT",
     colorFilters: VideoColorFilters,
     showCodecHud: Boolean,
+    onSetAspectRatio: (String) -> Unit = {},
+    onOpenSubtitlesAudio: (Int) -> Unit = {},
     onColorFiltersChange: (VideoColorFilters) -> Unit,
     onToggleCodecHud: () -> Unit,
     onOpenEqualizer: () -> Unit,
@@ -3268,6 +3283,70 @@ fun PlayerSettingsSheet(
                     steps = 10,
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.15f))
+
+            // Aspect Ratio
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Aspect Ratio", color = Color.White, fontWeight = FontWeight.SemiBold)
+                val aspectModes = listOf("FIT" to "Fit", "FILL" to "Fill", "STRETCH" to "Stretch", "16_9" to "16:9", "4_3" to "4:3", "21_9" to "21:9")
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(aspectModes) { (mode, label) ->
+                        FilterChip(
+                            selected = (mode == aspectRatioMode),
+                            onClick = { onSetAspectRatio(mode) },
+                            label = { Text(label, fontSize = 12.sp) }
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.15f))
+
+            // Audio & Subtitle Tracks
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Tracks & Background Audio", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { onOpenSubtitlesAudio(1) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Audiotrack, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Audio Tracks", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { onOpenSubtitlesAudio(0) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Subtitles, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Subtitles", fontSize = 12.sp)
+                    }
+                }
+
+                val isBackgroundAudio by viewModel.isBackgroundAudio.collectAsStateWithLifecycle()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Background Playback (Audio Only)", color = Color.White, fontSize = 13.sp)
+                        Text("Continue audio playback when screen turns off", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = isBackgroundAudio,
+                        onCheckedChange = { viewModel.toggleBackgroundAudio() }
+                    )
+                }
             }
 
             HorizontalDivider(color = Color.White.copy(alpha = 0.15f))
@@ -3504,20 +3583,27 @@ fun PlayerSettingsSheet(
 
                 // Sleep Timer
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Sleep Timer", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                    Text("Sleep Timer", color = Color.White, fontWeight = FontWeight.SemiBold)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        listOf(0 to "Off", 15 to "15m", 30 to "30m", 45 to "45m", 60 to "60m").forEach { (mins, lbl) ->
+                        listOf(0 to "Off", 15 to "15m", 30 to "30m", 60 to "60m", -1 to "End").forEach { (mins, lbl) ->
                             OutlinedButton(
                                 onClick = {
-                                    viewModel.setSleepTimerMinutes(mins)
-                                    Toast.makeText(context, if (mins == 0) "Sleep timer cancelled" else "Sleep timer: $lbl", Toast.LENGTH_SHORT).show()
+                                    if (mins == -1) {
+                                        val endMins = ((duration - currentPosition) / 60000L).toInt().coerceAtLeast(1)
+                                        viewModel.setSleepTimerMinutes(endMins)
+                                        Toast.makeText(context, "Sleep timer: End of video ($endMins min)", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        viewModel.setSleepTimerMinutes(mins)
+                                        Toast.makeText(context, if (mins == 0) "Sleep timer cancelled" else "Sleep timer: $lbl", Toast.LENGTH_SHORT).show()
+                                    }
                                 },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                modifier = Modifier.weight(1f)
                             ) {
-                                Text(lbl, fontSize = 11.sp)
+                                Text(lbl, fontSize = 11.sp, maxLines = 1)
                             }
                         }
                     }

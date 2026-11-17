@@ -468,10 +468,10 @@ interface PersonMediaCrossRefDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(refs: List<PersonMediaCrossRef>): List<Long>
 
-    @Query("SELECT DISTINCT m.* FROM media_items m INNER JOIN person_media_cross_ref ref ON m.id = ref.mediaId WHERE ref.clusterId = :clusterId AND m.isTrashed = 0 ORDER BY m.dateModified DESC")
+    @Query("SELECT m.* FROM media_items m INNER JOIN person_media_cross_ref ref ON m.id = ref.mediaId WHERE ref.clusterId = :clusterId AND m.isTrashed = 0 GROUP BY (CASE WHEN m.xxHash64 IS NOT NULL AND m.xxHash64 != '' THEN m.xxHash64 ELSE CAST(m.id AS TEXT) END) ORDER BY m.dateModified DESC")
     fun getMediaForCluster(clusterId: Long): Flow<List<MediaItem>>
 
-    @Query("SELECT DISTINCT m.* FROM media_items m INNER JOIN person_media_cross_ref ref ON m.id = ref.mediaId WHERE ref.clusterId = :clusterId AND m.isTrashed = 0 ORDER BY m.dateModified DESC")
+    @Query("SELECT m.* FROM media_items m INNER JOIN person_media_cross_ref ref ON m.id = ref.mediaId WHERE ref.clusterId = :clusterId AND m.isTrashed = 0 GROUP BY (CASE WHEN m.xxHash64 IS NOT NULL AND m.xxHash64 != '' THEN m.xxHash64 ELSE CAST(m.id AS TEXT) END) ORDER BY m.dateModified DESC")
     suspend fun getMediaForClusterSync(clusterId: Long): List<MediaItem>
 
     @Query("INSERT OR IGNORE INTO person_media_cross_ref (clusterId, mediaId, faceScore) SELECT :targetClusterId, mediaId, faceScore FROM person_media_cross_ref WHERE clusterId = :sourceClusterId")

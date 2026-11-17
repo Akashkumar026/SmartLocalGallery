@@ -1446,7 +1446,7 @@ fun AlbumsScreen(
                                 onClick = {
                                     val selected = personClusters.filter { it.id in selectedClusterIdsForMerge }
                                     if (selected.size >= 2) {
-                                        viewModel.mergeClusters(selected[0], selected[1])
+                                        viewModel.mergeMultipleClusters(selected.first(), selected.drop(1))
                                     }
                                     selectedClusterIdsForMerge = emptySet()
                                 },

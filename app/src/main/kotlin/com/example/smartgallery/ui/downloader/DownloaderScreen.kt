@@ -76,8 +76,10 @@ class DownloaderViewModel @Inject constructor(
     var selectedMediaType by mutableStateOf("VIDEO") // "VIDEO" or "AUDIO"
     var selectedVideoContainer by mutableStateOf("MP4") // "MP4" or "MKV"
     var selectedAudioContainer by mutableStateOf("MP3") // "MP3" or "M4A"
-    var selectedResolution by mutableStateOf("1080p") // "4K (2160p)", "1440p", "1080p", "720p", "480p"
+    var selectedResolution by mutableStateOf("1080p") // Dynamic based on mediaInfo.availableResolutions
     var selectedAudioBitrate by mutableStateOf("320k") // "320k", "192k", "128k"
+    var prefer60fps by mutableStateOf(true)
+    var convert30to60 by mutableStateOf(false)
 
     var isClipMode by mutableStateOf(false)
     var clipStartTime by mutableStateOf("00:00:00")
@@ -158,6 +160,9 @@ class DownloaderViewModel @Inject constructor(
                 val info = engine.fetchMediaInfo(cleanUrl)
                 mediaInfo = info
                 clipEndTime = MediaDownloaderEngine.formatDurationHms(info.durationMs)
+                if (info.availableResolutions.isNotEmpty()) {
+                    selectedResolution = info.availableResolutions.first().label
+                }
             } catch (e: Exception) {
                 android.util.Log.e("Downloader", "Inspect media URL failed: ${e.message}", e)
                 val typed = DownloadError.fromThrowable(e)
@@ -243,10 +248,12 @@ class DownloaderViewModel @Inject constructor(
             val clipEndMs = if (isClipMode) MediaDownloaderEngine.parseHmsToMs(clipEndTime) else 0L
 
             val isAudio = selectedMediaType == "AUDIO"
+            val fpsSuffix = if (prefer60fps) "_60FPS" else ""
+            val convertSuffix = if (convert30to60) "_CONVERT60" else ""
             val qualityStr = if (isAudio) {
                 "AUDIO_${selectedAudioBitrate}_${selectedAudioContainer}"
             } else {
-                "${selectedResolution}_${selectedVideoContainer}"
+                "${selectedResolution}_${selectedVideoContainer}${fpsSuffix}${convertSuffix}"
             }
 
             val task = DownloadTask(
@@ -770,6 +777,20 @@ fun DownloaderScreen(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )
+                                    Spacer(Modifier.height(6.dp))
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        val sizeText = if (info.estimatedTotalBytes > 0) " • ~${MediaDownloaderEngine.formatBytes(info.estimatedTotalBytes)}" else ""
+                                        Text(
+                                            text = "Max Available: ${info.maxResolutionHeight}p • ${info.maxFps}fps$sizeText",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
                                 }
                             }
 
@@ -805,11 +826,48 @@ fun DownloaderScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    listOf("4K (2160p)", "1440p", "1080p", "720p", "480p").forEach { res ->
+                                    info.availableResolutions.forEach { res ->
                                         FilterChip(
-                                            selected = viewModel.selectedResolution.startsWith(res.take(4)),
-                                            onClick = { viewModel.selectedResolution = res },
-                                            label = { Text(res.split(" ").first(), fontSize = 12.sp) }
+                                            selected = viewModel.selectedResolution.startsWith(res.label.take(4)),
+                                            onClick = { viewModel.selectedResolution = res.label },
+                                            label = {
+                                                val fpsBadge = if (res.hasHighFps) " 60fps" else ""
+                                                Text("${res.label.split(" ").first()}$fpsBadge", fontSize = 12.sp)
+                                            }
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Prefer 60fps (Smooth Motion)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                        Text("Prioritize 60fps/50fps high frame-rate streams", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Switch(
+                                        checked = viewModel.prefer60fps,
+                                        onCheckedChange = { viewModel.prefer60fps = it }
+                                    )
+                                }
+
+                                if (!viewModel.prefer60fps || info.maxFps < 50) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("Convert 30fps → 60fps", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                            Text("Fast ultra-smooth motion interpolation", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        Switch(
+                                            checked = viewModel.convert30to60,
+                                            onCheckedChange = { viewModel.convert30to60 = it }
                                         )
                                     }
                                 }

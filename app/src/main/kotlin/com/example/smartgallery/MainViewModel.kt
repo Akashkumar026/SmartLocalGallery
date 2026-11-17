@@ -389,9 +389,13 @@ class MainViewModel @Inject constructor(
     }
 
     fun mergeClusters(clusterA: PersonCluster, clusterB: PersonCluster) {
+        mergeMultipleClusters(clusterA, listOf(clusterB))
+    }
+
+    fun mergeMultipleClusters(target: PersonCluster, sources: List<PersonCluster>) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                engine.mergeClustersManually(clusterA, clusterB)
+                engine.mergeMultipleClustersManually(target, sources)
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error merging person clusters: ${e.message}", e)
             }

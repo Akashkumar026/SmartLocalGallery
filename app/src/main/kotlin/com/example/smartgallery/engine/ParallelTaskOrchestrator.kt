@@ -48,7 +48,8 @@ data class OrchestratorState(
 class ParallelTaskOrchestrator @Inject constructor(
     private val db: GalleryDatabase,
     private val engine: LocalGalleryEngine,
-    private val settings: SettingsRepository
+    private val settings: SettingsRepository,
+    private val profiler: com.example.smartgallery.profiler.DeviceCapabilityProfiler
 ) {
     companion object {
         private const val TAG = "ParallelTaskOrchestrator"
@@ -68,8 +69,9 @@ class ParallelTaskOrchestrator @Inject constructor(
     private var pauseFaces = false
 
     private suspend fun throttleIfActive() {
-        while (ActivePlayerRegistry.isPlaying) {
-            delay(1000)
+        if (ActivePlayerRegistry.isPlaying) {
+            delay(80)
+            yield()
         }
     }
 
@@ -85,7 +87,7 @@ class ParallelTaskOrchestrator @Inject constructor(
     fun startDuplicatesPipeline() {
         if (jobDuplicates?.isActive == true) return
         pauseDuplicates = false
-        jobDuplicates = orchestratorScope.launch(Dispatchers.IO.limitedParallelism(2)) {
+        jobDuplicates = orchestratorScope.launch(Dispatchers.Default.limitedParallelism(profiler.aiWorkerParallelism)) {
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             _state.update {
                 it.copy(
@@ -224,7 +226,7 @@ class ParallelTaskOrchestrator @Inject constructor(
     fun startCategorizerPipeline() {
         if (jobCategorizer?.isActive == true) return
         pauseCategorizer = false
-        jobCategorizer = orchestratorScope.launch(Dispatchers.Default.limitedParallelism(2)) {
+        jobCategorizer = orchestratorScope.launch(Dispatchers.Default.limitedParallelism(profiler.aiWorkerParallelism)) {
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             _state.update {
                 it.copy(

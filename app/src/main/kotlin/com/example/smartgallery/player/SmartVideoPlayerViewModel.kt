@@ -521,6 +521,12 @@ class SmartVideoPlayerViewModel @Inject constructor(
         _aspectRatioMode.value = next
     }
 
+    fun setAspectRatio(mode: String) {
+        if (aspectRatioCycle.contains(mode)) {
+            _aspectRatioMode.value = mode
+        }
+    }
+
     private val cropModeCycle = listOf("NONE", "CROP_16_9", "CROP_4_3", "CROP_1_1")
 
     fun cycleCropMode() {

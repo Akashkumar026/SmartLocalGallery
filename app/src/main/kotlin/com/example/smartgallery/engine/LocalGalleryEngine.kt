@@ -983,7 +983,12 @@ class LocalGalleryEngine @Inject constructor(
 
         // Initialize active clusters from database if continuing previous scan
         val activeClusters = mutableListOf<MutableCluster>()
-        if (!forceRescan) {
+        if (forceRescan) {
+            db.personClusterDao().deleteAll()
+            db.personMediaCrossRefDao().deleteAll()
+            db.faceEmbeddingDao().deleteAll()
+            db.mediaItemDao().clearAllFaceEmbeddingIds()
+        } else {
             val existing = db.personClusterDao().getAllSync()
             for (c in existing) {
                 val cent = c.centroid?.let { byteArrayToFloatArray(it) } ?: continue
@@ -1208,37 +1213,50 @@ class LocalGalleryEngine @Inject constructor(
     }
 
     suspend fun mergeClustersManually(clusterA: PersonCluster, clusterB: PersonCluster) = withContext(Dispatchers.IO) {
-        val targetId = clusterA.id
-        val sourceId = clusterB.id
-        if (targetId == sourceId) return@withContext
+        mergeMultipleClustersManually(clusterA, listOf(clusterB))
+    }
 
-        db.personMediaCrossRefDao().repointCluster(sourceId, targetId)
-        db.faceEmbeddingDao().repointPersonId(sourceId, targetId)
+    suspend fun mergeMultipleClustersManually(target: PersonCluster, sources: List<PersonCluster>) = withContext(Dispatchers.IO) {
+        val targetId = target.id
+        var currentFaceCount = target.faceCount
+        var currentCentroid = target.centroid?.let { byteArrayToFloatArray(it) }
+        var currentCover = target.coverMediaId
 
-        val centroidA = clusterA.centroid?.let { byteArrayToFloatArray(it) }
-        val centroidB = clusterB.centroid?.let { byteArrayToFloatArray(it) }
-        val mergedCentroidBytes = if (centroidA != null && centroidB != null) {
-            val total = clusterA.faceCount + clusterB.faceCount
-            val merged = FloatArray(EMBEDDING_SIZE)
-            for (i in 0 until EMBEDDING_SIZE) {
-                merged[i] = (centroidA[i] * clusterA.faceCount + centroidB[i] * clusterB.faceCount) / (if (total > 0) total else 1)
+        for (source in sources) {
+            val sourceId = source.id
+            if (targetId == sourceId) continue
+
+            db.personMediaCrossRefDao().repointCluster(sourceId, targetId)
+            db.faceEmbeddingDao().repointPersonId(sourceId, targetId)
+
+            val sourceCentroid = source.centroid?.let { byteArrayToFloatArray(it) }
+            if (currentCentroid != null && sourceCentroid != null) {
+                val total = currentFaceCount + source.faceCount
+                val merged = FloatArray(EMBEDDING_SIZE)
+                for (i in 0 until EMBEDDING_SIZE) {
+                    merged[i] = (currentCentroid[i] * currentFaceCount + sourceCentroid[i] * source.faceCount) / (if (total > 0) total else 1)
+                }
+                normalizeVector(merged)
+                currentCentroid = merged
+            } else if (currentCentroid == null) {
+                currentCentroid = sourceCentroid
             }
-            normalizeVector(merged)
-            floatArrayToByteArray(merged)
-        } else {
-            clusterA.centroid ?: clusterB.centroid
+
+            currentFaceCount += source.faceCount
+            if (currentCover == 0L && source.coverMediaId != 0L) {
+                currentCover = source.coverMediaId
+            }
+
+            db.personClusterDao().deleteById(sourceId)
         }
 
-        val newCount = clusterA.faceCount + clusterB.faceCount
-        val newCover = if (clusterA.coverMediaId != 0L) clusterA.coverMediaId else clusterB.coverMediaId
-
+        val mergedCentroidBytes = currentCentroid?.let { floatArrayToByteArray(it) } ?: target.centroid
         db.personClusterDao().updateClusterStats(
             targetId,
-            newCount,
-            newCover,
+            currentFaceCount,
+            currentCover,
             mergedCentroidBytes
         )
-        db.personClusterDao().deleteById(sourceId)
     }
 
     // ─── 6. Live "Select-to-Copy" OCR & Offline Barcode/QR Scanner ─────────
@@ -1348,9 +1366,9 @@ class LocalGalleryEngine @Inject constructor(
             }
             val labels = labelsResult.map { Pair(it.text, it.confidence) }
 
-            // 4. OCR if text analysis is required
+            // 4. OCR if text analysis is required (supports ID cards and documents with portrait photos)
             var rawOcrText = item.ocrText
-            if (rawOcrText.isNullOrBlank() && !hasBarcodes && faceCount == 0) {
+            if (rawOcrText.isNullOrBlank() && !hasBarcodes && faceAreaFraction < 0.35f) {
                 val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
                 rawOcrText = try {
                     val ocrResult = recognizer.process(inputImage).await()
