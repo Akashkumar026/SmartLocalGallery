@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.media.MediaScannerConnection
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
@@ -39,46 +40,74 @@ class DownloadWorker @AssistedInject constructor(
         val taskId = inputData.getLong(KEY_TASK_ID, -1L)
         if (taskId == -1L) return@withContext Result.failure()
 
-        val readyResult = downloaderEngine.ensureReady(appContext)
-        if (readyResult.isFailure) {
-            val err = readyResult.exceptionOrNull() ?: IllegalStateException("Downloader engine not ready")
-            android.util.Log.e("Downloader", "DownloadWorker failed: Engine not ready: ${err.message}", err)
-            val typedError = DownloadError.fromThrowable(err)
-            val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"
-            db.downloadTaskDao().updateStatus(taskId, "FAILED", null, errorMsg)
-            val notifId = (NOTIFICATION_ID_BASE + (taskId % 1000)).toInt()
-            showFailureNotification("Downloader Engine Error", typedError.message, notifId)
-            return@withContext Result.failure()
+        // Acquire partial wakeLock to prevent OEM battery savers/Doze from killing long multi-hour downloads
+        val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val wakeLock = powerManager?.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "SmartGallery:DownloadWakeLock"
+        )?.apply {
+            setReferenceCounted(false)
+            try {
+                acquire(1000L * 60 * 60 * 48) // 48-hour safeguard for marathon transfers
+                android.util.Log.d("Downloader", "Acquired DownloadWakeLock for task $taskId")
+            } catch (t: Throwable) {
+                android.util.Log.w("Downloader", "Failed acquiring wakeLock: ${t.message}")
+            }
         }
-
-        val task = db.downloadTaskDao().getByIdSync(taskId) ?: return@withContext Result.failure()
 
         val notifId = (NOTIFICATION_ID_BASE + (taskId % 1000)).toInt()
-
-        if (downloaderEngine.isTaskPaused(taskId)) {
-            android.util.Log.i("Downloader", "DownloadWorker: task $taskId is already marked PAUSED. Exiting cleanly.")
-            return@withContext Result.success()
-        }
+        val task = db.downloadTaskDao().getByIdSync(taskId) ?: return@withContext Result.failure()
 
         try {
-            setForeground(createForegroundInfo(task.title, 0, notifId))
-        } catch (t: Throwable) {
-            android.util.Log.w("Downloader", "Could not elevate to foreground service: ${t.message}")
-        }
+            val readyResult = downloaderEngine.ensureReady(appContext)
+            if (readyResult.isFailure) {
+                val err = readyResult.exceptionOrNull() ?: IllegalStateException("Downloader engine not ready")
+                android.util.Log.e("Downloader", "DownloadWorker failed: Engine not ready: ${err.message}", err)
+                val typedError = DownloadError.fromThrowable(err)
+                val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"
+                db.downloadTaskDao().updateStatus(taskId, "FAILED", null, errorMsg)
+                showFailureNotification("Downloader Engine Error", typedError.message, notifId)
+                return@withContext Result.failure()
+            }
 
-        if (downloaderEngine.isTaskPaused(taskId)) {
-            return@withContext Result.success()
-        }
-        db.downloadTaskDao().updateStatus(taskId, "DOWNLOADING", null, null)
+            if (downloaderEngine.isTaskPaused(taskId)) {
+                android.util.Log.i("Downloader", "DownloadWorker: task $taskId is already marked PAUSED. Exiting cleanly.")
+                return@withContext Result.success()
+            }
 
-        try {
+            // Immediately elevate to foreground dataSync service on Android 10+ (API 29+)
+            try {
+                setForeground(createForegroundInfo(task.title, task.progress.toInt(), notifId, task.speedBytesPerSec))
+            } catch (t: Throwable) {
+                android.util.Log.w("Downloader", "Could not elevate to foreground service: ${t.message}")
+            }
+
+            if (downloaderEngine.isTaskPaused(taskId)) {
+                return@withContext Result.success()
+            }
+
+            // Pre-flight storage headroom verification before downloading or muxing streams
+            val stagingDir = File(appContext.cacheDir, "dl_staging/$taskId")
+            try {
+                MediaDownloaderEngine.checkStorageHeadroom(appContext, stagingDir, task.totalBytes)
+            } catch (storageEx: Throwable) {
+                android.util.Log.e("Downloader", "Pre-flight storage check failed for task $taskId: ${storageEx.message}")
+                val typedError = DownloadError.fromThrowable(storageEx)
+                val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"
+                db.downloadTaskDao().updateStatus(taskId, "FAILED", null, errorMsg)
+                showFailureNotification("Low Storage Space", typedError.message, notifId)
+                return@withContext Result.failure()
+            }
+
+            db.downloadTaskDao().updateStatus(taskId, "DOWNLOADING", null, null)
+
             val outputFile = downloaderEngine.executeDownload(task) { progress, downloadedBytes, totalBytes, speed, etaSecs ->
                 if (isStopped || downloaderEngine.isTaskPaused(taskId)) {
                     downloaderEngine.pauseTask(taskId)
                     return@executeDownload
                 }
                 val progressInt = progress.toInt()
-                val notification = buildNotification(task.title, progressInt, etaSecs)
+                val notification = buildNotification(task.title, progressInt, etaSecs, speed)
                 val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 nm.notify(notifId, notification)
 
@@ -141,7 +170,7 @@ class DownloadWorker @AssistedInject constructor(
                 (isStopped && db.downloadTaskDao().getByIdSync(taskId)?.status == "PAUSED")
 
             if (isPaused) {
-                android.util.Log.i("Downloader", "DownloadWorker: Task $taskId is PAUSED gracefully.")
+                android.util.Log.i("Downloader", "DownloadWorker: Task $taskId is PAUSED gracefully. Preserving staging checkpoints.")
                 db.downloadTaskDao().updateStatus(taskId, "PAUSED", null, null)
                 nm.cancel(notifId)
                 return@withContext Result.success()
@@ -163,6 +192,8 @@ class DownloadWorker @AssistedInject constructor(
             val typedError = DownloadError.fromThrowable(e)
             val errorMsg = "${typedError::class.simpleName}: ${typedError.message}"
             db.downloadTaskDao().updateStatus(taskId, "FAILED", null, errorMsg)
+
+            // CRITICAL RULE: In FAILED state, dl_staging/$taskId is PRESERVED so retry can resume from checkpoint
             if (typedError is DownloadError.StorageFull) {
                 showFailureNotification("Low Storage Space", typedError.message, notifId)
             } else if (typedError is DownloadError.EngineNotReady) {
@@ -171,12 +202,21 @@ class DownloadWorker @AssistedInject constructor(
                 showFailureNotification(task.title, typedError.message, notifId)
             }
             Result.failure()
+        } finally {
+            if (wakeLock?.isHeld == true) {
+                try {
+                    wakeLock.release()
+                    android.util.Log.d("Downloader", "DownloadWakeLock released successfully for task $taskId")
+                } catch (t: Throwable) {
+                    android.util.Log.w("Downloader", "Error releasing DownloadWakeLock: ${t.message}")
+                }
+            }
         }
     }
 
-    private fun createForegroundInfo(title: String, progress: Int, notifId: Int): ForegroundInfo {
+    private fun createForegroundInfo(title: String, progress: Int, notifId: Int, speed: Long = 0L): ForegroundInfo {
         createChannelIfNeeded()
-        val notif = buildNotification(title, progress, 0L)
+        val notif = buildNotification(title, progress, 0L, speed)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ForegroundInfo(
                 notifId,
@@ -188,15 +228,18 @@ class DownloadWorker @AssistedInject constructor(
         }
     }
 
-    private fun buildNotification(title: String, progress: Int, etaSecs: Long): android.app.Notification {
+    private fun buildNotification(title: String, progress: Int, etaSecs: Long, speed: Long = 0L): android.app.Notification {
+        val speedText = if (speed > 0) " • ${MediaDownloaderEngine.formatSpeed(speed)}" else ""
         val etaText = if (etaSecs > 0) " • ETA: ${etaSecs}s" else ""
         return NotificationCompat.Builder(appContext, CHANNEL_ID)
             .setContentTitle("Downloading: $title")
-            .setContentText("$progress%$etaText")
+            .setContentText("$progress%$speedText$etaText")
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setProgress(100, progress, progress == 0)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .build()
     }
 
@@ -236,4 +279,3 @@ class DownloadWorker @AssistedInject constructor(
         }
     }
 }
-

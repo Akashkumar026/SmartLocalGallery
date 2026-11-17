@@ -97,12 +97,55 @@ class MediaDownloaderEngine @Inject constructor(
     }
 
     /**
-     * Backward-compatible helper that throws if engine initialization fails.
+     * Backward-compatible helper that throws if engine initialization fails,
+     * and performs an automatic 12-hour periodic self-update of yt-dlp extractors (NIGHTLY channel).
      */
-    suspend fun ensureInitialized(ctx: Context = context) {
+    suspend fun ensureInitialized(ctx: Context = context) = withContext(Dispatchers.IO) {
         val res = ensureReady(ctx)
         if (res.isFailure) {
             throw res.exceptionOrNull() ?: IllegalStateException("Downloader engine initialization failed")
+        }
+
+        val appCtx = ctx.applicationContext
+        val prefs = runCatching { appCtx.getSharedPreferences("downloader_engine_prefs", Context.MODE_PRIVATE) }.getOrNull()
+        if (prefs != null) {
+            val lastUpdate = prefs.getLong("last_ytdlp_update_ms", 0L)
+            val now = System.currentTimeMillis()
+            val twelveHoursMs = 12L * 60 * 60 * 1000L
+
+            if (now - lastUpdate > twelveHoursMs) {
+                runCatching {
+                    Log.i(TAG, "Checking for yt-dlp extractor auto-update (>12h since last check)...")
+                    val status = YoutubeDL.getInstance().updateYoutubeDL(appCtx, YoutubeDL.UpdateChannel.NIGHTLY)
+                    Log.i(TAG, "Automatic yt-dlp extractor update completed: $status")
+                    prefs.edit().putLong("last_ytdlp_update_ms", now).apply()
+                }.onFailure { t ->
+                    Log.w(TAG, "Automatic yt-dlp extractor update notice: ${t.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Triggers manual update of the yt-dlp extractor on demand (using NIGHTLY channel with fallback to binary update).
+     */
+    suspend fun updateExtractor(ctx: Context = context): Result<String> = withContext(Dispatchers.IO) {
+        val ready = ensureReady(ctx)
+        if (ready.isFailure) {
+            return@withContext Result.failure(ready.exceptionOrNull() ?: IllegalStateException("Downloader engine not ready"))
+        }
+        val appCtx = ctx.applicationContext
+        try {
+            Log.i(TAG, "Manually triggering yt-dlp extractor update (NIGHTLY channel)...")
+            val status = YoutubeDL.getInstance().updateYoutubeDL(appCtx, YoutubeDL.UpdateChannel.NIGHTLY)
+            val prefs = runCatching { appCtx.getSharedPreferences("downloader_engine_prefs", Context.MODE_PRIVATE) }.getOrNull()
+            prefs?.edit()?.putLong("last_ytdlp_update_ms", System.currentTimeMillis())?.apply()
+            val msg = "yt-dlp extractor updated: $status"
+            Log.i(TAG, msg)
+            Result.success(msg)
+        } catch (t: Throwable) {
+            Log.w(TAG, "NIGHTLY update failed, falling back to direct binary update: ${t.message}")
+            updateYtdlBinary(ctx)
         }
     }
 
@@ -291,6 +334,40 @@ class MediaDownloaderEngine @Inject constructor(
                 else -> "$bytes B"
             }
         }
+
+        /**
+         * Verifies sufficient disk space in both internal cache (staging) and external storage (destination).
+         * Throws IllegalStateException with "Low Storage Space" if disk space is critically low.
+         */
+        fun checkStorageHeadroom(context: Context, stagingDir: File? = null, estimatedTotalBytes: Long = 0L) {
+            val cacheStat = StatFs(context.cacheDir.path)
+            val cacheAvailable = cacheStat.availableBytes
+            val extStat = StatFs(Environment.getExternalStorageDirectory().path)
+            val extAvailable = extStat.availableBytes
+
+            val stagedBytes = stagingDir?.listFiles()?.sumOf { it.length() } ?: 0L
+            val requiredBytes = when {
+                estimatedTotalBytes > 0L -> (estimatedTotalBytes * 1.5).toLong()
+                stagedBytes > 0L -> (stagedBytes * 1.5).toLong()
+                else -> 250L * 1024 * 1024 // 250 MB minimum headroom
+            }
+
+            if (cacheAvailable < requiredBytes) {
+                val availMb = cacheAvailable / (1024 * 1024)
+                val reqMb = requiredBytes / (1024 * 1024)
+                throw IllegalStateException(
+                    "Low Storage Space: Only ${availMb}MB available in cache staging, but ${reqMb}MB is required for download and stream muxing."
+                )
+            }
+
+            if (extAvailable < requiredBytes) {
+                val availMb = extAvailable / (1024 * 1024)
+                val reqMb = requiredBytes / (1024 * 1024)
+                throw IllegalStateException(
+                    "Low Storage Space: Only ${availMb}MB available on device storage, but ${reqMb}MB is required to save final media."
+                )
+            }
+        }
     }
 
     data class MediaInfoResult(
@@ -403,6 +480,32 @@ class MediaDownloaderEngine @Inject constructor(
             ?: File(context.applicationInfo.nativeLibraryDir, "libffmpeg.so")
     }
 
+    private fun applyResilientFlags(
+        request: YoutubeDLRequest,
+        appSettings: com.example.smartgallery.data.settings.AppSettings
+    ) {
+        request.addOption("-c")
+        request.addOption("--continue")
+        request.addOption("--retries", "20")
+        request.addOption("--fragment-retries", "20")
+        request.addOption("--file-access-retries", "10")
+        request.addOption("--retry-sleep", "http:exp=1:30")
+        request.addOption("--socket-timeout", "30")
+        request.addOption("--force-ipv4")
+        request.addOption("--no-playlist")
+        request.addOption("--no-check-certificates")
+        request.addOption("--no-cache-dir")
+        request.addOption("--no-warnings")
+
+        if (appSettings.cookiesTxtContent.isNotBlank()) {
+            val cookiesFile = File(context.filesDir, "cookies.txt")
+            cookiesFile.writeText(appSettings.cookiesTxtContent)
+            request.addOption("--cookies", cookiesFile.absolutePath)
+        } else {
+            request.addOption("--extractor-args", "youtube:player_client=android_vr,tv,ios,mweb")
+        }
+    }
+
     /**
      * Executes download of YouTube / Instagram video or audio.
      * Uses Scoped-Storage app-private cache staging (context.cacheDir/dl_staging/$taskId)
@@ -418,20 +521,12 @@ class MediaDownloaderEngine @Inject constructor(
             throw SecurityException("Strict Offline Lockdown is active.")
         }
 
-        // Pre-flight StatFs check on storage
-        val storageDir = Environment.getExternalStorageDirectory()
-        val stat = StatFs(storageDir.absolutePath)
-        val freeBytes = stat.availableBytes
-        val minRequiredBytes = if (task.totalBytes > 0L) (task.totalBytes * 1.25).toLong() else 100L * 1024 * 1024
-        if (freeBytes < minRequiredBytes) {
-            val freeMb = freeBytes / (1024 * 1024)
-            val reqMb = minRequiredBytes / (1024 * 1024)
-            throw IllegalStateException("Low Storage Space: Only ${freeMb}MB available, but ${reqMb}MB is required.")
-        }
-
         // Staging strictly in app-private cache directory (no POSIX permission issues for C/C++ binaries)
         val stagingDir = File(context.cacheDir, "dl_staging/${task.id}")
         if (!stagingDir.exists()) stagingDir.mkdirs()
+
+        // Pre-flight storage safety check on cache staging and device storage
+        checkStorageHeadroom(context, stagingDir, task.totalBytes)
 
         if (isTaskPaused(task.id)) {
             Log.i(TAG, "executeDownload: Task ${task.id} is marked PAUSED before start. Aborting.")
@@ -451,39 +546,52 @@ class MediaDownloaderEngine @Inject constructor(
             task.quality.contains("128", true) -> "128k"
             else -> "320k"
         }
-
         val isYouTube = task.url.contains("youtube.com", true) || task.url.contains("youtu.be", true)
-        val request = YoutubeDLRequest(task.url)
-
-        // Always pass continue flag to pick up partial downloads
-        request.addOption("-c")
-        request.addOption("--no-playlist")
-        request.addOption("--no-check-certificates")
-        request.addOption("--no-cache-dir")
-        request.addOption("--no-warnings")
-
-        // Cookies file handling stored securely in app internal filesDir
-        if (appSettings.cookiesTxtContent.isNotBlank()) {
-            val cookiesFile = File(context.filesDir, "cookies.txt")
-            cookiesFile.writeText(appSettings.cookiesTxtContent)
-            request.addOption("--cookies", cookiesFile.absolutePath)
-        }
-
         val processTag = "download_${task.id}"
 
         if (isInstagram && isAudio) {
             // Instagram Audio Extraction mode: Download stream first, then convert via bundled FFmpeg
             val tempVideoTemplate = File(stagingDir, "insta_temp_${task.id}_%(id)s.%(ext)s").absolutePath
-            request.addOption("-o", tempVideoTemplate)
-            request.addOption("-f", "best")
-            request.addOption("--no-mtime")
+            var instaSuccess = false
+            var lastInstaEx: Exception? = null
 
-            YoutubeDL.getInstance().execute(request, processTag) { progress, eta, line ->
+            for (attempt in 1..5) {
                 if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
                 if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
-                val pFloat = progress.coerceIn(0f, 90f)
-                val spd = parseSpeedBytes(line)
-                onProgress(pFloat, 0L, 0L, spd, eta.coerceAtLeast(0L))
+                checkStorageHeadroom(context, stagingDir, task.totalBytes)
+
+                val instaRequest = YoutubeDLRequest(task.url).apply {
+                    applyResilientFlags(this, appSettings)
+                    addOption("-o", tempVideoTemplate)
+                    addOption("-f", "best")
+                    addOption("--no-mtime")
+                }
+
+                try {
+                    Log.i(TAG, "Starting Instagram download for task ${task.id} (attempt $attempt/5)...")
+                    YoutubeDL.getInstance().execute(instaRequest, processTag) { progress, eta, line ->
+                        if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+                        if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
+                        val pFloat = progress.coerceIn(0f, 90f)
+                        val spd = parseSpeedBytes(line)
+                        onProgress(pFloat, 0L, 0L, spd, eta.coerceAtLeast(0L))
+                    }
+                    instaSuccess = true
+                    break
+                } catch (e: Exception) {
+                    if (isTaskPaused(task.id) || e is DownloadPausedException) throw DownloadPausedException(task.id)
+                    if (isTaskCancelled(task.id) || e is DownloadCancelledException) throw DownloadCancelledException(task.id)
+                    lastInstaEx = e
+                    Log.w(TAG, "Instagram download pass attempt $attempt/5 failed for task ${task.id}: ${e.message}")
+                    if (attempt < 5) {
+                        Log.i(TAG, "Refreshing stream URL and resuming partial checkpoints in 5s (attempt ${attempt + 1}/5)...")
+                        kotlinx.coroutines.delay(5000L)
+                    }
+                }
+            }
+
+            if (!instaSuccess) {
+                throw lastInstaEx ?: IllegalStateException("Instagram download failed after 5 recovery attempts")
             }
 
             if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
@@ -496,6 +604,9 @@ class MediaDownloaderEngine @Inject constructor(
             val safeTitle = task.title.replace(Regex("[^a-zA-Z0-9_.-]"), "_").take(80)
             val audioExt = if (isM4a) "m4a" else "mp3"
             val finalStagedAudio = File(stagingDir, "${safeTitle}_${task.id}.$audioExt")
+
+            // Storage headroom check before FFmpeg conversion
+            checkStorageHeadroom(context, stagingDir, 0L)
 
             // Run bundled FFmpeg to extract audio with specified bitrate
             val ffmpegBin = getFfmpegBinary()
@@ -530,106 +641,132 @@ class MediaDownloaderEngine @Inject constructor(
             onProgress(95f, finalStagedAudio.length(), finalStagedAudio.length(), 0L, 0L)
             val publicFile = moveStagedFileToMediaStore(finalStagedAudio, isAudio = true)
             onProgress(100f, publicFile.length(), publicFile.length(), 0L, 0L)
-            stagingDir.deleteRecursively()
+            if (publicFile.exists() && publicFile.length() > 0L) {
+                stagingDir.deleteRecursively()
+            }
             return@withContext publicFile
-        }
-
-        // Format selection & resilient fallback chains
-        if (isAudio) {
-            request.addOption("-x")
-            request.addOption("--audio-format", if (isM4a) "m4a" else "mp3")
-            val qualityArg = when (bitrate) {
-                "192k" -> "2"
-                "128k" -> "4"
-                else -> "0" // 320kbps
-            }
-            request.addOption("--audio-quality", qualityArg)
-            request.addOption("--embed-thumbnail")
-            request.addOption("--add-metadata")
-        } else {
-            val heightLimit = when {
-                task.quality.contains("2160", true) || task.quality.contains("Max", true) || task.quality.contains("4K", true) -> 2160
-                task.quality.contains("1440", true) -> 1440
-                task.quality.contains("1080", true) -> 1080
-                task.quality.contains("720", true) -> 720
-                task.quality.contains("480", true) -> 480
-                else -> 1080
-            }
-            val mergeContainer = if (isMkv) "mkv" else "mp4"
-            request.addOption("-f", "bestvideo[height<=$heightLimit][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best")
-            request.addOption("--merge-output-format", mergeContainer)
-            request.addOption("--add-metadata")
-        }
-
-        // Timestamp Clipper
-        if (task.isClipped && task.clipEndMs > task.clipStartMs) {
-            val startHms = formatDurationHms(task.clipStartMs)
-            val endHms = formatDurationHms(task.clipEndMs)
-            request.addOption("--download-sections", "*$startHms-$endHms")
-            request.addOption("--force-keyframes-at-cuts")
-            Log.i(TAG, "Configured timestamp clipper slice: $startHms to $endHms")
-        } else {
-            // For non-YouTube direct streams, aria2c acceleration is supported;
-            // For YouTube / DASH streams, use yt-dlp's native concurrent fragment downloader (-N 4)
-            // to ensure maximum stability without external process exit-code failures.
-            if (!isYouTube) {
-                val connections = appSettings.downloadAria2cConnections.coerceIn(1, profiler.maxAria2cConnections)
-                request.addOption("--downloader", "libaria2c.so")
-                request.addOption(
-                    "--downloader-args",
-                    "aria2c:-c -j $connections -x $connections -s $connections -k 1M --auto-file-renaming=false --allow-overwrite=true"
-                )
-            } else {
-                request.addOption("-N", "4")
-            }
         }
 
         // Staging output template
         val outTemplate = File(stagingDir, "%(title).200B-%(id)s.%(ext)s").absolutePath
-        request.addOption("-o", outTemplate)
-        request.addOption("--no-mtime")
-
         var estimatedTotalBytes = task.totalBytes.coerceAtLeast(0L)
 
-        try {
-            YoutubeDL.getInstance().execute(request, processTag) { progress, eta, line ->
-                if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
-                if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
-                val pFloat = progress.coerceIn(0f, 95f)
-                val etaSecs = eta.coerceAtLeast(0L)
-                val spd = parseSpeedBytes(line)
-                val parsedTotal = parseTotalBytesFromLine(line)
-                if (parsedTotal > 0L) estimatedTotalBytes = parsedTotal
-                val downloaded = if (estimatedTotalBytes > 0L) (estimatedTotalBytes * (pFloat / 100f)).toLong() else 0L
-                val stagedBytes = stagingDir.listFiles()?.sumOf { it.length() } ?: 0L
-                val actualDownloaded = if (downloaded > 0L) downloaded else stagedBytes
-                onProgress(pFloat, actualDownloaded, estimatedTotalBytes, spd, etaSecs)
-            }
-        } catch (e: Exception) {
-            if (isTaskPaused(task.id) || e is DownloadPausedException) {
-                Log.i(TAG, "Task ${task.id} paused by user during primary download pass.")
-                throw DownloadPausedException(task.id)
-            }
-            if (isTaskCancelled(task.id) || e is DownloadCancelledException) {
-                Log.i(TAG, "Task ${task.id} cancelled by user during primary download pass.")
-                throw DownloadCancelledException(task.id)
+        fun createPrimaryRequest(): YoutubeDLRequest {
+            val req = YoutubeDLRequest(task.url)
+            applyResilientFlags(req, appSettings)
+
+            if (isAudio) {
+                req.addOption("-x")
+                req.addOption("--audio-format", if (isM4a) "m4a" else "mp3")
+                val qualityArg = when (bitrate) {
+                    "192k" -> "2"
+                    "128k" -> "4"
+                    else -> "0" // 320kbps
+                }
+                req.addOption("--audio-quality", qualityArg)
+                req.addOption("--embed-thumbnail")
+                req.addOption("--add-metadata")
+            } else {
+                val heightLimit = when {
+                    task.quality.contains("2160", true) || task.quality.contains("Max", true) || task.quality.contains("4K", true) -> 2160
+                    task.quality.contains("1440", true) -> 1440
+                    task.quality.contains("1080", true) -> 1080
+                    task.quality.contains("720", true) -> 720
+                    task.quality.contains("480", true) -> 480
+                    else -> 1080
+                }
+                val mergeContainer = if (isMkv) "mkv" else "mp4"
+                req.addOption("-f", "bestvideo[height<=$heightLimit][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best")
+                req.addOption("--merge-output-format", mergeContainer)
+                req.addOption("--add-metadata")
             }
 
-            Log.w(TAG, "Initial download pass failed: ${e.message}. Attempting resilient fallback 'best/bestvideo+bestaudio'")
-            val fallbackRequest = YoutubeDLRequest(task.url)
-            fallbackRequest.addOption("-c")
-            fallbackRequest.addOption("--no-playlist")
-            fallbackRequest.addOption("--no-check-certificates")
-            fallbackRequest.addOption("--no-cache-dir")
-            fallbackRequest.addOption("--no-warnings")
-            if (appSettings.cookiesTxtContent.isNotBlank()) {
-                val cookiesFile = File(context.filesDir, "cookies.txt")
-                fallbackRequest.addOption("--cookies", cookiesFile.absolutePath)
+            // Timestamp Clipper
+            if (task.isClipped && task.clipEndMs > task.clipStartMs) {
+                val startHms = formatDurationHms(task.clipStartMs)
+                val endHms = formatDurationHms(task.clipEndMs)
+                req.addOption("--download-sections", "*$startHms-$endHms")
+                req.addOption("--force-keyframes-at-cuts")
+                Log.i(TAG, "Configured timestamp clipper slice: $startHms to $endHms")
+            } else {
+                if (!isYouTube) {
+                    val connections = appSettings.downloadAria2cConnections.coerceIn(1, profiler.maxAria2cConnections)
+                    req.addOption("--downloader", "libaria2c.so")
+                    req.addOption(
+                        "--external-downloader-args",
+                        "aria2c:-c -x 8 -s 8 -k 1M --file-allocation=none"
+                    )
+                    req.addOption(
+                        "--downloader-args",
+                        "aria2c:-c -j $connections -x $connections -s $connections -k 1M --file-allocation=none --auto-file-renaming=false --allow-overwrite=true"
+                    )
+                } else {
+                    req.addOption("-N", "4")
+                }
             }
-            fallbackRequest.addOption("-f", "best/bestvideo+bestaudio")
-            fallbackRequest.addOption("-o", outTemplate)
-            fallbackRequest.addOption("--no-mtime")
-            fallbackRequest.addOption("--merge-output-format", if (isMkv) "mkv" else "mp4")
+
+            req.addOption("-o", outTemplate)
+            req.addOption("--no-mtime")
+            return req
+        }
+
+        var primarySuccess = false
+        var lastPrimaryEx: Exception? = null
+
+        // Controlled recovery loop (up to 5 attempts, 5s delay between attempts)
+        for (attempt in 1..5) {
+            if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+            if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
+            checkStorageHeadroom(context, stagingDir, estimatedTotalBytes)
+
+            val currentRequest = createPrimaryRequest()
+
+            try {
+                Log.i(TAG, "Executing download for task ${task.id} (attempt $attempt/5)...")
+                YoutubeDL.getInstance().execute(currentRequest, processTag) { progress, eta, line ->
+                    if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
+                    if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
+                    val pFloat = progress.coerceIn(0f, 95f)
+                    val etaSecs = eta.coerceAtLeast(0L)
+                    val spd = parseSpeedBytes(line)
+                    val parsedTotal = parseTotalBytesFromLine(line)
+                    if (parsedTotal > 0L) estimatedTotalBytes = parsedTotal
+                    val downloaded = if (estimatedTotalBytes > 0L) (estimatedTotalBytes * (pFloat / 100f)).toLong() else 0L
+                    val stagedBytes = stagingDir.listFiles()?.sumOf { it.length() } ?: 0L
+                    val actualDownloaded = if (downloaded > 0L) downloaded else stagedBytes
+                    onProgress(pFloat, actualDownloaded, estimatedTotalBytes, spd, etaSecs)
+                }
+                primarySuccess = true
+                break
+            } catch (e: Exception) {
+                if (isTaskPaused(task.id) || e is DownloadPausedException) {
+                    Log.i(TAG, "Task ${task.id} paused by user during primary download pass.")
+                    throw DownloadPausedException(task.id)
+                }
+                if (isTaskCancelled(task.id) || e is DownloadCancelledException) {
+                    Log.i(TAG, "Task ${task.id} cancelled by user during primary download pass.")
+                    throw DownloadCancelledException(task.id)
+                }
+
+                lastPrimaryEx = e
+                Log.w(TAG, "Primary download pass attempt $attempt/5 failed for task ${task.id}: ${e.message}")
+
+                if (attempt < 5) {
+                    Log.i(TAG, "Refreshing stream URL and resuming partial checkpoints in 5s (attempt ${attempt + 1}/5)...")
+                    kotlinx.coroutines.delay(5000L)
+                }
+            }
+        }
+
+        if (!primarySuccess) {
+            Log.w(TAG, "Primary download passes failed: ${lastPrimaryEx?.message}. Attempting resilient fallback 'best/bestvideo+bestaudio'")
+            val fallbackRequest = YoutubeDLRequest(task.url).apply {
+                applyResilientFlags(this, appSettings)
+                addOption("-f", "best/bestvideo+bestaudio")
+                addOption("-o", outTemplate)
+                addOption("--no-mtime")
+                addOption("--merge-output-format", if (isMkv) "mkv" else "mp4")
+            }
 
             try {
                 YoutubeDL.getInstance().execute(fallbackRequest, processTag) { progress, eta, line ->
@@ -661,8 +798,15 @@ class MediaDownloaderEngine @Inject constructor(
         if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
         if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
 
-        // Locate downloaded staged file
-        val stagedFiles = stagingDir.listFiles { file -> file.isFile && file.length() > 0 }?.sortedByDescending { it.lastModified() }
+        // Locate downloaded staged file, preferring completed merged media over temporary parts
+        val stagedFiles = stagingDir.listFiles { file ->
+            file.isFile && file.length() > 0 &&
+                !file.name.endsWith(".part") &&
+                !file.name.endsWith(".aria2") &&
+                !file.name.endsWith(".ytdl")
+        }?.sortedByDescending { it.lastModified() }
+            ?: stagingDir.listFiles { file -> file.isFile && file.length() > 0 }?.sortedByDescending { it.lastModified() }
+
         val stagedFile = stagedFiles?.firstOrNull()
             ?: throw IllegalStateException("Download completed but no output file was created in cache staging")
 
@@ -672,9 +816,13 @@ class MediaDownloaderEngine @Inject constructor(
         val publicFile = moveStagedFileToMediaStore(stagedFile, isAudio = isAudio)
         onProgress(100f, publicFile.length(), publicFile.length(), 0L, 0L)
 
-        // Delete staging directory
-        stagingDir.deleteRecursively()
-        Log.i(TAG, "Download and Scoped Storage transfer complete: ${publicFile.absolutePath} (${publicFile.length()} bytes)")
+        // Delete staging directory ONLY after verifying final merged file exists in MediaStore with size > 0
+        if (publicFile.exists() && publicFile.length() > 0L) {
+            stagingDir.deleteRecursively()
+            Log.i(TAG, "Download and Scoped Storage transfer complete: ${publicFile.absolutePath} (${publicFile.length()} bytes)")
+        } else {
+            Log.w(TAG, "Output file in MediaStore is missing or empty, preserving staging directory: ${stagingDir.absolutePath}")
+        }
         publicFile
     }
 

@@ -90,11 +90,11 @@ class DownloaderViewModel @Inject constructor(
     fun updateEngine() {
         if (isUpdatingEngine) return
         isUpdatingEngine = true
-        engineStatusMessage = "Downloading latest yt-dlp binary update..."
+        engineStatusMessage = "Checking and updating yt-dlp extractor..."
         viewModelScope.launch {
-            engine.updateYtdlBinary(context).fold(
+            engine.updateExtractor(context).fold(
                 onSuccess = { msg ->
-                    android.util.Log.i("Downloader", "Manual engine update success: $msg")
+                    android.util.Log.i("Downloader", "Manual extractor update success: $msg")
                     engineStatusMessage = msg
                     engineError = null
                     errorMessage = null
@@ -103,12 +103,16 @@ class DownloaderViewModel @Inject constructor(
                     }
                 },
                 onFailure = { t ->
-                    android.util.Log.e("Downloader", "Manual engine update failed: ${t.message}", t)
+                    android.util.Log.e("Downloader", "Manual extractor update failed: ${t.message}", t)
                     engineStatusMessage = "Update notice: ${t.message}"
                 }
             )
             isUpdatingEngine = false
         }
+    }
+
+    fun retryTask(task: DownloadTask) {
+        resumeDownload(task)
     }
 
     fun retryEngineInit() {
@@ -358,16 +362,59 @@ fun DownloaderScreen(
         }
     }
 
+    var showTopMenu by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Universal Downloader", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(
+                        onClick = { viewModel.updateEngine() },
+                        enabled = !viewModel.isUpdatingEngine
+                    ) {
+                        if (viewModel.isUpdatingEngine) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.SystemUpdateAlt, contentDescription = "Update Extractor")
+                        }
+                    }
                     IconButton(onClick = { cookiePickerLauncher.launch(arrayOf("text/*", "*/*")) }) {
                         Icon(Icons.Default.Key, contentDescription = "Import cookies.txt")
                     }
-                    IconButton(onClick = { navController.navigate("settings") }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    Box {
+                        IconButton(onClick = { showTopMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More Options")
+                        }
+                        DropdownMenu(
+                            expanded = showTopMenu,
+                            onDismissRequest = { showTopMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Update Extractor (yt-dlp)") },
+                                onClick = {
+                                    showTopMenu = false
+                                    viewModel.updateEngine()
+                                },
+                                leadingIcon = { Icon(Icons.Default.SystemUpdateAlt, contentDescription = null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Import cookies.txt") },
+                                onClick = {
+                                    showTopMenu = false
+                                    cookiePickerLauncher.launch(arrayOf("text/*", "*/*"))
+                                },
+                                leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Downloader Settings") },
+                                onClick = {
+                                    showTopMenu = false
+                                    navController.navigate("settings")
+                                },
+                                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) }
+                            )
+                        }
                     }
                 }
             )

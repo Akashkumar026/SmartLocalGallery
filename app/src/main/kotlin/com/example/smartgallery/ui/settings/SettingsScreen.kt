@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -146,6 +147,7 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val settings: SettingsRepository,
     @ApplicationContext private val context: Context,
+    private val downloaderEngine: dagger.Lazy<com.example.smartgallery.downloader.MediaDownloaderEngine>,
 ) : ViewModel() {
 
     val settingsFlow: Flow<AppSettings> = settings.settingsFlow
@@ -158,6 +160,16 @@ class SettingsViewModel @Inject constructor(
         .map { list ->
             list.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
         }
+
+    fun updateExtractor(onComplete: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val result = downloaderEngine.get().updateExtractor(context)
+            result.fold(
+                onSuccess = { onComplete(true, it) },
+                onFailure = { onComplete(false, it.message ?: "Failed to update extractor") }
+            )
+        }
+    }
 
     init {
         refreshCacheSize()
@@ -1031,6 +1043,25 @@ fun SettingsScreen(
                     steps = 14,
                     valueLabel = { "${it.toInt()} conns" },
                     onValueChange = { viewModel.setDownloadAria2cConnections(it.toInt()) }
+                )
+            }
+
+            item {
+                ActionPreference(
+                    title = "Update Extractor",
+                    summary = "Download latest yt-dlp nightly extractor rules to support new site changes",
+                    buttonLabel = "Update",
+                    icon = { Icon(Icons.Default.SystemUpdateAlt, contentDescription = null) },
+                    onClick = {
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("Checking for yt-dlp extractor update...")
+                            viewModel.updateExtractor { _, msg ->
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(msg)
+                                }
+                            }
+                        }
+                    }
                 )
             }
 
