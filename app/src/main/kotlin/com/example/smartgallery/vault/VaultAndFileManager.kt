@@ -41,11 +41,11 @@ class VaultAndFileManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "VaultAndFileManager"
-        private const val VAULT_DIR_NAME = "vault_files"
+        private const val VAULT_DIR_NAME = "private_vault"
     }
 
     private val vaultDir: File by lazy {
-        val dir = context.noBackupFilesDir.resolve(VAULT_DIR_NAME)
+        val dir = File(context.filesDir, VAULT_DIR_NAME)
         if (!dir.exists()) dir.mkdirs()
         dir
     }
