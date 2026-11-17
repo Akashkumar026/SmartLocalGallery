@@ -341,6 +341,14 @@ fun SmartVideoPlayerScreen(
     val gifMakerState by viewModel.gifMakerState.collectAsStateWithLifecycle()
     val useVlcFallback by viewModel.useVlcFallback.collectAsStateWithLifecycle()
     val currentUri by viewModel.currentUri.collectAsStateWithLifecycle()
+    val resumeNotification by viewModel.resumeNotification.collectAsStateWithLifecycle()
+
+    LaunchedEffect(resumeNotification) {
+        if (resumeNotification != null) {
+            kotlinx.coroutines.delay(5000L)
+            viewModel.dismissResumeNotification()
+        }
+    }
 
     // Subtitle & Audio state
     val currentSubtitleText by subtitleController.currentSubtitleText.collectAsStateWithLifecycle()
@@ -1077,6 +1085,71 @@ fun SmartVideoPlayerScreen(
                                     .clip(RoundedCornerShape(1.5.dp)),
                                 color = MaterialTheme.colorScheme.primary,
                                 trackColor = Color.White.copy(alpha = 0.2f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 5.6 FLOATING RESUME NOTIFICATION PILL ─────────────────────────────
+        AnimatedVisibility(
+            visible = resumeNotification != null && !isInPip,
+            enter = fadeIn(tween(250)) + slideInVertically(tween(250)) { it / 2 },
+            exit = fadeOut(tween(200)) + slideOutVertically(tween(200)) { it / 2 },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 96.dp)
+        ) {
+            resumeNotification?.let { notif ->
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color(0xD91E1E24),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Resumed from ${notif.formattedTime}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.White
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(16.dp)
+                                .background(Color.White.copy(alpha = 0.3f))
+                        )
+                        TextButton(
+                            onClick = { viewModel.startOver() },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text(
+                                "Start Over",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.dismissResumeNotification() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Clear,
+                                contentDescription = "Dismiss",
+                                modifier = Modifier.size(14.dp),
+                                tint = Color.White.copy(alpha = 0.7f)
                             )
                         }
                     }
@@ -3263,12 +3336,12 @@ fun PlayerSettingsSheet(
                         fontWeight = FontWeight.Bold
                     )
                 }
-                val speedOptions = listOf(0.5f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
-                Row(
+                val speedOptions = listOf(0.5f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f)
+                LazyRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    speedOptions.forEach { spd ->
+                    items(speedOptions) { spd ->
                         FilterChip(
                             selected = (spd == playbackSpeed),
                             onClick = { viewModel.setSpeed(spd) },
@@ -3277,10 +3350,10 @@ fun PlayerSettingsSheet(
                     }
                 }
                 Slider(
-                    value = playbackSpeed,
+                    value = playbackSpeed.coerceIn(0.25f, 4.0f),
                     onValueChange = { viewModel.setSpeed(it) },
-                    valueRange = 0.25f..3.0f,
-                    steps = 10,
+                    valueRange = 0.25f..4.0f,
+                    steps = 14,
                     modifier = Modifier.fillMaxWidth()
                 )
             }

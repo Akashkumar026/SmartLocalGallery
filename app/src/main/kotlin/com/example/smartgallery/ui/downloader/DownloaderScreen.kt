@@ -6,6 +6,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -161,7 +162,8 @@ class DownloaderViewModel @Inject constructor(
                 mediaInfo = info
                 clipEndTime = MediaDownloaderEngine.formatDurationHms(info.durationMs)
                 if (info.availableResolutions.isNotEmpty()) {
-                    selectedResolution = info.availableResolutions.first().label
+                    val first = info.availableResolutions.first()
+                    selectedResolution = "${first.label} [fmt:${first.formatId}]"
                 }
             } catch (e: Exception) {
                 android.util.Log.e("Downloader", "Inspect media URL failed: ${e.message}", e)
@@ -822,17 +824,17 @@ fun DownloaderScreen(
                             if (viewModel.selectedMediaType == "VIDEO") {
                                 Text("2. Video Quality & Resolution", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                 Spacer(Modifier.height(6.dp))
-                                Row(
+                                LazyRow(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    info.availableResolutions.forEach { res ->
+                                    items(info.availableResolutions) { res ->
+                                        val resId = "${res.label} [fmt:${res.formatId}]"
                                         FilterChip(
-                                            selected = viewModel.selectedResolution.startsWith(res.label.take(4)),
-                                            onClick = { viewModel.selectedResolution = res.label },
+                                            selected = viewModel.selectedResolution == resId || viewModel.selectedResolution.startsWith(res.label),
+                                            onClick = { viewModel.selectedResolution = resId },
                                             label = {
-                                                val fpsBadge = if (res.hasHighFps) " 60fps" else ""
-                                                Text("${res.label.split(" ").first()}$fpsBadge", fontSize = 12.sp)
+                                                Text(res.label, fontSize = 12.sp)
                                             }
                                         )
                                     }

@@ -105,6 +105,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -430,6 +431,7 @@ fun SettingsScreen(
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var showResetAiDialog by remember { mutableStateOf(false) }
     var showPinSetupDialog by remember { mutableStateOf(false) }
+    var showVaultUnlockDialog by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var exportedJsonText by remember { mutableStateOf("") }
 
@@ -1094,7 +1096,107 @@ fun SettingsScreen(
             }
 
             // â”â” SECTION 5: Privacy, Storage & Maintenance â”â”
-            item { SectionHeader("Privacy, Storage & Maintenance") }
+            item { SectionHeader("Privacy & Security") }
+
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Security,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Advanced Protection",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Hardware-backed encrypted vault & media isolation",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Surface(
+                            onClick = {
+                                if (appSettings.vaultPinHash.isBlank()) {
+                                    showPinSetupDialog = true
+                                } else if (appSettings.vaultBiometricEnabled) {
+                                    authenticateBiometric(
+                                        context = context,
+                                        onSuccess = {
+                                            navController.navigate("vault")
+                                        },
+                                        onError = {
+                                            showVaultUnlockDialog = true
+                                        }
+                                    )
+                                } else {
+                                    showVaultUnlockDialog = true
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Lock,
+                                    contentDescription = "Vault",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Encrypted Private Vault",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (appSettings.vaultPinHash.isBlank()) "Setup PIN to activate vault" else "AES-256-GCM • Tap to authenticate & open",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = null,
+                                    modifier = Modifier.graphicsLayer { rotationZ = 180f },
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
             item {
                 VaultSecurityPreference(
@@ -1126,6 +1228,8 @@ fun SettingsScreen(
                     }
                 )
             }
+
+            item { SectionHeader("Storage & Maintenance") }
 
             item {
                 ActionPreference(
@@ -1317,6 +1421,32 @@ fun SettingsScreen(
                 }
             },
             onDismiss = { showPinSetupDialog = false }
+        )
+    }
+
+    // Vault Unlock Dialog
+    if (showVaultUnlockDialog) {
+        VaultUnlockDialog(
+            onUnlock = {
+                showVaultUnlockDialog = false
+                navController.navigate("vault")
+            },
+            onBiometricClick = if (appSettings.vaultBiometricEnabled) {
+                {
+                    authenticateBiometric(
+                        context = context,
+                        onSuccess = {
+                            showVaultUnlockDialog = false
+                            navController.navigate("vault")
+                        },
+                        onError = { msg ->
+                            coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
+                        }
+                    )
+                }
+            } else null,
+            onDismiss = { showVaultUnlockDialog = false },
+            verifyPin = { entered -> viewModel.verifyPin(entered, appSettings.vaultPinHash) }
         )
     }
 
@@ -2382,4 +2512,93 @@ val ISO_LANGUAGES = listOf(
     "ms" to "Malay (Bahasa Melayu)",
     "fil" to "Filipino (Tagalog)"
 )
+
+@Composable
+fun VaultUnlockDialog(
+    onUnlock: () -> Unit,
+    onBiometricClick: (() -> Unit)?,
+    onDismiss: () -> Unit,
+    verifyPin: (String) -> Boolean
+) {
+    var pin by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Unlock Private Vault")
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Enter your secret PIN to access the encrypted vault.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = {
+                        if (it.length <= 8 && it.all { ch -> ch.isDigit() }) {
+                            pin = it
+                            errorMessage = null
+                            if (it.length >= 4 && verifyPin(it)) {
+                                onUnlock()
+                            }
+                        }
+                    },
+                    label = { Text("Vault PIN") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    singleLine = true,
+                    isError = errorMessage != null,
+                    supportingText = errorMessage?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (onBiometricClick != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    FilledTonalButton(
+                        onClick = onBiometricClick,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            Icons.Default.Fingerprint,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Use Biometric Unlock")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (verifyPin(pin)) {
+                        onUnlock()
+                    } else {
+                        errorMessage = "Incorrect PIN. Please try again."
+                    }
+                },
+                enabled = pin.length >= 4
+            ) {
+                Text("Unlock")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
 

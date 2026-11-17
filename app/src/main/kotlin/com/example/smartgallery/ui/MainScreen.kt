@@ -16,8 +16,16 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import com.example.smartgallery.QuickDateChip
+import com.example.smartgallery.SearchFilterChip
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -25,7 +33,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -104,8 +114,11 @@ fun MainScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                windowInsets = WindowInsets.navigationBars
+            ) {
                 // Tab 0: Timeline
                 NavigationBarItem(
                     selected = selectedTab == 0,
@@ -275,6 +288,43 @@ fun MainScreen(
 // TAB 0: TimelineScreen
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+enum class TimelineZoomLevel(val columns: Int, val label: String) {
+    DENSE(4, "Dense (4 cols)"),
+    DAY(3, "Day View (3 cols)"),
+    MONTH(2, "Month Overview (2 cols)")
+}
+
+private fun formatTimelineDay(timestamp: Long): String {
+    val calItem = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+    val calNow = java.util.Calendar.getInstance()
+
+    val isToday = calItem.get(java.util.Calendar.YEAR) == calNow.get(java.util.Calendar.YEAR) &&
+            calItem.get(java.util.Calendar.DAY_OF_YEAR) == calNow.get(java.util.Calendar.DAY_OF_YEAR)
+    if (isToday) return "Today"
+
+    calNow.add(java.util.Calendar.DAY_OF_YEAR, -1)
+    val isYesterday = calItem.get(java.util.Calendar.YEAR) == calNow.get(java.util.Calendar.YEAR) &&
+            calItem.get(java.util.Calendar.DAY_OF_YEAR) == calNow.get(java.util.Calendar.DAY_OF_YEAR)
+    if (isYesterday) return "Yesterday"
+
+    val isThisYear = calItem.get(java.util.Calendar.YEAR) == java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+    return if (isThisYear) {
+        DateFormat.format("EEE, d MMM", calItem).toString()
+    } else {
+        DateFormat.format("EEE, d MMM yyyy", calItem).toString()
+    }
+}
+
+private fun formatTimelineMonth(timestamp: Long): String {
+    val calItem = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+    return DateFormat.format("MMMM yyyy", calItem).toString()
+}
+
+private fun getItemTimestamp(item: MediaItem): Long {
+    val ts = if (item.dateTaken > 0) item.dateTaken else item.dateAdded * 1000L
+    return if (ts > 0L) ts else System.currentTimeMillis()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TimelineScreen(
@@ -293,12 +343,24 @@ fun TimelineScreen(
     val isSelectionMode = selectedIds.isNotEmpty()
     var showSlideshow by remember { mutableStateOf(false) }
 
+    var zoomLevel by remember { mutableStateOf(TimelineZoomLevel.DAY) }
+    var showZoomPill by remember { mutableStateOf(false) }
+    var accumulatedScale by remember { mutableFloatStateOf(1f) }
+    val gridState = rememberLazyGridState()
+
+    LaunchedEffect(zoomLevel, showZoomPill) {
+        if (showZoomPill) {
+            kotlinx.coroutines.delay(2000L)
+            showZoomPill = false
+        }
+    }
+
     BackHandler(enabled = isSelectionMode) {
         selectedIds = emptySet()
     }
     BackHandler(enabled = isSearchExpanded) {
         isSearchExpanded = false
-        viewModel.setSearchQuery("")
+        viewModel.resetAllSearchFilters()
     }
 
     val onThisDayItems = remember(items) {
@@ -324,6 +386,7 @@ fun TimelineScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             if (isSelectionMode) {
                 TopAppBar(
@@ -365,24 +428,7 @@ fun TimelineScreen(
             } else {
                 TopAppBar(
                     title = {
-                        if (isSearchExpanded) {
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { viewModel.setSearchQuery(it) },
-                                placeholder = { Text("Search photos, OCR, tags...") },
-                                singleLine = true,
-                                trailingIcon = {
-                                    if (searchQuery.isNotEmpty()) {
-                                        IconButton(onClick = { viewModel.setSearchQuery("") }) {
-                                            Icon(Icons.Default.Clear, contentDescription = "Clear")
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        } else {
-                            Text("Smart Gallery", fontWeight = FontWeight.Bold)
-                        }
+                        Text("Smart Gallery", fontWeight = FontWeight.Bold)
                     },
                     actions = {
                         IconButton(onClick = { viewModel.setSelectedTab(4) }) {
@@ -392,12 +438,9 @@ fun TimelineScreen(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
-                        IconButton(onClick = {
-                            isSearchExpanded = !isSearchExpanded
-                            if (!isSearchExpanded) viewModel.setSearchQuery("")
-                        }) {
+                        IconButton(onClick = { isSearchExpanded = true }) {
                             Icon(
-                                if (isSearchExpanded) Icons.Default.Close else Icons.Default.Search,
+                                Icons.Default.Search,
                                 contentDescription = "Search"
                             )
                         }
@@ -412,11 +455,68 @@ fun TimelineScreen(
             }
         }
     ) { padding ->
-        Box(
+        val groupedByDay = remember(displayItems) {
+            displayItems.groupBy { item -> formatTimelineDay(getItemTimestamp(item)) }
+        }
+
+        val groupedByMonth = remember(displayItems) {
+            displayItems.groupBy { item -> formatTimelineMonth(getItemTimestamp(item)) }
+        }
+
+        val groupedByMonthAndDay = remember(displayItems) {
+            displayItems.groupBy { item -> formatTimelineMonth(getItemTimestamp(item)) }
+                .mapValues { (_, monthItems) ->
+                    monthItems.groupBy { item -> formatTimelineDay(getItemTimestamp(item)) }
+                }
+        }
+
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        accumulatedScale *= zoom
+                        if (accumulatedScale > 1.25f) {
+                            accumulatedScale = 1f
+                            val next = when (zoomLevel) {
+                                TimelineZoomLevel.DENSE -> TimelineZoomLevel.DAY
+                                TimelineZoomLevel.DAY -> TimelineZoomLevel.MONTH
+                                TimelineZoomLevel.MONTH -> TimelineZoomLevel.MONTH
+                            }
+                            if (next != zoomLevel) {
+                                zoomLevel = next
+                                showZoomPill = true
+                            }
+                        } else if (accumulatedScale < 0.8f) {
+                            accumulatedScale = 1f
+                            val next = when (zoomLevel) {
+                                TimelineZoomLevel.MONTH -> TimelineZoomLevel.DAY
+                                TimelineZoomLevel.DAY -> TimelineZoomLevel.DENSE
+                                TimelineZoomLevel.DENSE -> TimelineZoomLevel.DENSE
+                            }
+                            if (next != zoomLevel) {
+                                zoomLevel = next
+                                showZoomPill = true
+                            }
+                        }
+                    }
+                }
         ) {
+            val gridColumns = when {
+                maxWidth < 360.dp -> when (zoomLevel) {
+                    TimelineZoomLevel.DENSE -> 3
+                    TimelineZoomLevel.DAY -> 2
+                    TimelineZoomLevel.MONTH -> 1
+                }
+                maxWidth > 600.dp -> when (zoomLevel) {
+                    TimelineZoomLevel.DENSE -> 6
+                    TimelineZoomLevel.DAY -> 4
+                    TimelineZoomLevel.MONTH -> 3
+                }
+                else -> zoomLevel.columns
+            }
+
             if (isLoading && displayItems.isEmpty()) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else if (displayItems.isEmpty()) {
@@ -442,17 +542,9 @@ fun TimelineScreen(
                     }
                 }
             } else {
-                // Group media by Month-Year for timeline
-                val groupedByMonth = remember(displayItems) {
-                    displayItems.groupBy { item ->
-                        val timestamp = if (item.dateTaken > 0) item.dateTaken else item.dateAdded * 1000L
-                        val date = Date(if (timestamp > 0) timestamp else System.currentTimeMillis())
-                        DateFormat.format("MMMM yyyy", date).toString()
-                    }
-                }
-
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(appSettings.gridColumns.coerceIn(2, 6)),
+                    columns = GridCells.Fixed(gridColumns),
+                    state = gridState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(2.dp)
                 ) {
@@ -522,45 +614,236 @@ fun TimelineScreen(
                         }
                     }
 
-                    groupedByMonth.forEach { (monthHeader, itemsInMonth) ->
-                        // Header span
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            Text(
-                                text = monthHeader,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                    when (zoomLevel) {
+                        TimelineZoomLevel.DENSE -> {
+                            groupedByMonth.forEach { (monthHeader, itemsInMonth) ->
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    Text(
+                                        text = monthHeader,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                items(
+                                    items = itemsInMonth,
+                                    key = { item -> "${item.id}_${item.mediaStoreId}" }
+                                ) { item ->
+                                    val isSelected = item.id in selectedIds
+                                    MediaThumbnailCard(
+                                        item = item,
+                                        isSelected = isSelected,
+                                        isSelectionMode = isSelectionMode,
+                                        targetThumbnailSize = viewModel.profiler.targetGridThumbnailSize,
+                                        preferredBitmapConfig = viewModel.profiler.preferredBitmapConfig,
+                                        onClick = {
+                                            if (isSelectionMode) {
+                                                selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
+                                            } else {
+                                                navigateToViewer(navController, item)
+                                            }
+                                        },
+                                        onLongClick = { selectedIds = selectedIds + item.id },
+                                        onToggleFavorite = { viewModel.toggleFavorite(item) }
+                                    )
+                                }
+                            }
                         }
-
-                        items(
-                            items = itemsInMonth,
-                            key = { item -> "${item.id}_${item.mediaStoreId}" }
-                        ) { item ->
-                            val isSelected = item.id in selectedIds
-                            MediaThumbnailCard(
-                                item = item,
-                                isSelected = isSelected,
-                                isSelectionMode = isSelectionMode,
-                                targetThumbnailSize = viewModel.profiler.targetGridThumbnailSize,
-                                preferredBitmapConfig = viewModel.profiler.preferredBitmapConfig,
-                                onClick = {
-                                    if (isSelectionMode) {
-                                        selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
-                                    } else {
-                                        navigateToViewer(navController, item)
+                        TimelineZoomLevel.DAY -> {
+                            groupedByDay.forEach { (dayHeader, itemsInDay) ->
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = dayHeader,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${itemsInDay.size} items",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
-                                },
-                                onLongClick = {
-                                    selectedIds = selectedIds + item.id
-                                },
-                                onToggleFavorite = { viewModel.toggleFavorite(item) }
-                            )
+                                }
+                                items(
+                                    items = itemsInDay,
+                                    key = { item -> "${item.id}_${item.mediaStoreId}" }
+                                ) { item ->
+                                    val isSelected = item.id in selectedIds
+                                    MediaThumbnailCard(
+                                        item = item,
+                                        isSelected = isSelected,
+                                        isSelectionMode = isSelectionMode,
+                                        targetThumbnailSize = viewModel.profiler.targetGridThumbnailSize,
+                                        preferredBitmapConfig = viewModel.profiler.preferredBitmapConfig,
+                                        onClick = {
+                                            if (isSelectionMode) {
+                                                selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
+                                            } else {
+                                                navigateToViewer(navController, item)
+                                            }
+                                        },
+                                        onLongClick = { selectedIds = selectedIds + item.id },
+                                        onToggleFavorite = { viewModel.toggleFavorite(item) }
+                                    )
+                                }
+                            }
+                        }
+                        TimelineZoomLevel.MONTH -> {
+                            groupedByMonthAndDay.forEach { (monthHeader, daysMap) ->
+                                val totalMonthItems = daysMap.values.sumOf { it.size }
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = monthHeader,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "$totalMonthItems items",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+
+                                daysMap.forEach { (daySubHeader, itemsInDay) ->
+                                    item(span = { GridItemSpan(maxLineSpan) }) {
+                                        Text(
+                                            text = daySubHeader,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    items(
+                                        items = itemsInDay,
+                                        key = { item -> "${item.id}_${item.mediaStoreId}" }
+                                    ) { item ->
+                                        val isSelected = item.id in selectedIds
+                                        MediaThumbnailCard(
+                                            item = item,
+                                            isSelected = isSelected,
+                                            isSelectionMode = isSelectionMode,
+                                            targetThumbnailSize = viewModel.profiler.targetGridThumbnailSize,
+                                            preferredBitmapConfig = viewModel.profiler.preferredBitmapConfig,
+                                            onClick = {
+                                                if (isSelectionMode) {
+                                                    selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
+                                                } else {
+                                                    navigateToViewer(navController, item)
+                                                }
+                                            },
+                                            onLongClick = { selectedIds = selectedIds + item.id },
+                                            onToggleFavorite = { viewModel.toggleFavorite(item) }
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
+                }
+            }
+
+            // Floating Zoom Level Pill
+            AnimatedVisibility(
+                visible = showZoomPill,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.92f),
+                    shadowElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ZoomIn,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.inverseOnSurface
+                        )
+                        Text(
+                            text = zoomLevel.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.inverseOnSurface
+                        )
+                    }
+                }
+            }
+
+            // Side Date Scrubber Bubble
+            val isScrolling by remember { derivedStateOf { gridState.isScrollInProgress } }
+            val currentVisibleDate by remember {
+                derivedStateOf {
+                    val firstIdx = gridState.firstVisibleItemIndex
+                    if (displayItems.isNotEmpty() && firstIdx in displayItems.indices) {
+                        formatTimelineMonth(getItemTimestamp(displayItems[firstIdx]))
+                    } else ""
+                }
+            }
+            AnimatedVisibility(
+                visible = isScrolling && currentVisibleDate.isNotBlank(),
+                enter = fadeIn() + slideInHorizontally { it },
+                exit = fadeOut() + slideOutHorizontally { it },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 12.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.9f),
+                    shadowElevation = 8.dp
+                ) {
+                    Text(
+                        text = currentVisibleDate,
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
                 }
             }
         }
@@ -571,6 +854,463 @@ fun TimelineScreen(
             photos = onThisDayItems,
             onDismiss = { showSlideshow = false }
         )
+    }
+
+    if (isSearchExpanded) {
+        SearchOverlayScreen(
+            viewModel = viewModel,
+            navController = navController,
+            onDismiss = {
+                isSearchExpanded = false
+                viewModel.resetAllSearchFilters()
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SearchOverlayScreen(
+    viewModel: MainViewModel,
+    navController: NavController,
+    onDismiss: () -> Unit
+) {
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val searchFilter by viewModel.searchFilter.collectAsStateWithLifecycle()
+    val selectedDateChip by viewModel.selectedDateChip.collectAsStateWithLifecycle()
+    val customDateRange by viewModel.customDateRange.collectAsStateWithLifecycle()
+    val selectedPersonId by viewModel.selectedPersonClusterId.collectAsStateWithLifecycle()
+    val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
+    val personClusters by viewModel.personClusters.collectAsStateWithLifecycle()
+    val allMediaItems by viewModel.mediaItems.collectAsStateWithLifecycle()
+
+    var showDateRangeDialog by remember { mutableStateOf(false) }
+    val dateRangePickerState = rememberDateRangePickerState()
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
+
+    val hasActiveQuery = searchQuery.isNotBlank() ||
+            searchFilter != SearchFilterChip.ALL ||
+            selectedDateChip != QuickDateChip.ALL_TIME ||
+            customDateRange != null ||
+            selectedPersonId != null
+
+    BackHandler {
+        onDismiss()
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Glassmorphic / rounded search bar
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                shadowElevation = 2.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = {
+                            viewModel.setSearchQuery(it)
+                        },
+                        placeholder = {
+                            Text(
+                                "Search photos, OCR, receipts, tags...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color.Transparent,
+                            unfocusedBorderColor = Color.Transparent
+                        ),
+                        keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                        keyboardActions = KeyboardActions(
+                            onSearch = {
+                                if (searchQuery.isNotBlank()) {
+                                    viewModel.addRecentSearch(searchQuery)
+                                }
+                            }
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester)
+                    )
+
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = { viewModel.setSearchQuery("") },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Clear text",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else if (hasActiveQuery) {
+                        IconButton(
+                            onClick = { viewModel.resetAllSearchFilters() },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Clear,
+                                contentDescription = "Reset filters",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Date Search Row
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // "Select Date / Range" interactive pill
+                item {
+                    val dateLabel = if (customDateRange != null) {
+                        val start = DateFormat.format("d MMM", Date(customDateRange!!.first))
+                        val end = DateFormat.format("d MMM", Date(customDateRange!!.second))
+                        "$start - $end"
+                    } else {
+                        "Select Date / Range"
+                    }
+                    val isCustomActive = customDateRange != null
+                    FilterChip(
+                        selected = isCustomActive,
+                        onClick = { showDateRangeDialog = true },
+                        label = { Text(dateLabel, maxLines = 1) },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.DateRange,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        trailingIcon = if (isCustomActive) {
+                            {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Clear date",
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable { viewModel.setQuickDateChip(QuickDateChip.ALL_TIME) }
+                                )
+                            }
+                        } else null
+                    )
+                }
+
+                items(QuickDateChip.entries.toTypedArray()) { chip ->
+                    if (chip != QuickDateChip.ALL_TIME) {
+                        FilterChip(
+                            selected = selectedDateChip == chip && customDateRange == null,
+                            onClick = {
+                                if (selectedDateChip == chip) {
+                                    viewModel.setQuickDateChip(QuickDateChip.ALL_TIME)
+                                } else {
+                                    viewModel.setQuickDateChip(chip)
+                                }
+                            },
+                            label = { Text(chip.label) }
+                        )
+                    }
+                }
+            }
+
+            // Media Type & Smart Filter Chips Row
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items(SearchFilterChip.entries.toTypedArray()) { chip ->
+                    FilterChip(
+                        selected = searchFilter == chip,
+                        onClick = { viewModel.setSearchFilter(chip) },
+                        label = { Text(chip.label) },
+                        leadingIcon = when (chip) {
+                            SearchFilterChip.PHOTOS -> ({ Icon(Icons.Default.PhotoLibrary, null, Modifier.size(16.dp)) })
+                            SearchFilterChip.VIDEOS -> ({ Icon(Icons.Default.VideoLibrary, null, Modifier.size(16.dp)) })
+                            SearchFilterChip.DOCUMENTS -> ({ Icon(Icons.Default.Description, null, Modifier.size(16.dp)) })
+                            SearchFilterChip.BILLS -> ({ Icon(Icons.Default.Receipt, null, Modifier.size(16.dp)) })
+                            SearchFilterChip.CERTIFICATES -> ({ Icon(Icons.Default.AutoAwesome, null, Modifier.size(16.dp)) })
+                            SearchFilterChip.SCREENSHOTS -> ({ Icon(Icons.Default.PhotoLibrary, null, Modifier.size(16.dp)) })
+                            SearchFilterChip.FAVORITES -> ({ Icon(Icons.Default.Favorite, null, Modifier.size(16.dp)) })
+                            else -> null
+                        }
+                    )
+                }
+            }
+
+            // Content Area: Either Results Grid OR (Recent Searches + People Avatars)
+            if (hasActiveQuery) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${searchResults.size} results found",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(onClick = { viewModel.resetAllSearchFilters() }) {
+                        Text("Reset All")
+                    }
+                }
+
+                if (searchResults.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.Search,
+                                contentDescription = null,
+                                modifier = Modifier.size(56.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "No media matches your search filters",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(110.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(searchResults, key = { "${it.id}_${it.mediaStoreId}" }) { item ->
+                            MediaThumbnailCard(
+                                item = item,
+                                isSelected = false,
+                                isSelectionMode = false,
+                                targetThumbnailSize = viewModel.profiler.targetGridThumbnailSize,
+                                preferredBitmapConfig = viewModel.profiler.preferredBitmapConfig,
+                                onClick = {
+                                    if (searchQuery.isNotBlank()) {
+                                        viewModel.addRecentSearch(searchQuery)
+                                    }
+                                    navigateToViewer(navController, item)
+                                },
+                                onLongClick = {},
+                                onToggleFavorite = { viewModel.toggleFavorite(item) }
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Empty query view: Recent Searches + People Avatars
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(vertical = 12.dp)
+                ) {
+                    // People Quick-Avatars Section
+                    if (personClusters.isNotEmpty()) {
+                        Text(
+                            text = "People in Your Gallery",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            items(personClusters, key = { it.id }) { person ->
+                                val isSelected = selectedPersonId == person.id
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable {
+                                        if (isSelected) {
+                                            viewModel.setSelectedPersonClusterId(null)
+                                        } else {
+                                            viewModel.setSelectedPersonClusterId(person.id)
+                                        }
+                                    }
+                                ) {
+                                    val coverItem = remember(person.coverMediaId, allMediaItems) {
+                                        allMediaItems.firstOrNull { it.id == person.coverMediaId }
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(68.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                                            .then(
+                                                if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                                                else Modifier
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (coverItem != null) {
+                                            AsyncImage(
+                                                model = coverItem.contentUri,
+                                                contentDescription = person.displayName,
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        } else {
+                                            Icon(
+                                                Icons.Default.Face,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(36.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        text = person.displayName.ifBlank { "Person ${person.id}" },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.widthIn(max = 76.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                    }
+
+                    // Recent Searches Section
+                    if (recentSearches.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Recent Searches",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            TextButton(onClick = { viewModel.clearRecentSearches() }) {
+                                Text("Clear All")
+                            }
+                        }
+
+                        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            recentSearches.forEach { searchTag ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            viewModel.setSearchQuery(searchTag)
+                                        }
+                                        .padding(vertical = 10.dp, horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.History,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        text = searchTag,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = { viewModel.removeRecentSearch(searchTag) },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Remove",
+                                            modifier = Modifier.size(16.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDateRangeDialog) {
+        DatePickerDialog(
+            onDismissRequest = { showDateRangeDialog = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val start = dateRangePickerState.selectedStartDateMillis
+                        val end = dateRangePickerState.selectedEndDateMillis ?: start
+                        if (start != null && end != null) {
+                            viewModel.setCustomDateRange(start, end + 86400000L - 1)
+                        }
+                        showDateRangeDialog = false
+                    }
+                ) {
+                    Text("Apply")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDateRangeDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        ) {
+            DateRangePicker(
+                state = dateRangePickerState,
+                title = { Text("Select Date Range", modifier = Modifier.padding(16.dp)) }
+            )
+        }
     }
 }
 
@@ -1117,6 +1857,7 @@ fun AlbumsScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
                 title = { Text("Albums & Folders", fontWeight = FontWeight.Bold) },
@@ -1323,54 +2064,6 @@ fun AlbumsScreen(
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        item {
-                            ElevatedCard(
-                                onClick = { navController.navigate("vault") },
-                                modifier = Modifier
-                                    .width(140.dp)
-                                    .height(160.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.elevatedCardColors(
-                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                                )
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(12.dp),
-                                    verticalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = MaterialTheme.colorScheme.tertiary,
-                                        modifier = Modifier.size(44.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                Icons.Default.Lock,
-                                                contentDescription = "Vault",
-                                                tint = MaterialTheme.colorScheme.onTertiary,
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                        }
-                                    }
-                                    Column {
-                                        Text(
-                                            text = "Private Vault",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                                        )
-                                        Text(
-                                            text = "AES-256 Locked",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f),
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
-                            }
-                        }
                         items(items = smartAlbums, key = { it.bucketId }) { smartAlbum ->
                             ElevatedCard(
                                 onClick = { selectedAlbum = smartAlbum },
@@ -1756,6 +2449,7 @@ fun CleanerScreen(
     var groupToDeleteFolder by remember { mutableStateOf<DuplicateGroup?>(null) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
                 title = { Text("Storage Cleaner", fontWeight = FontWeight.Bold) },
@@ -2374,6 +3068,7 @@ fun MediaBrowserScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
                 title = { Text("Browse Files", fontWeight = FontWeight.Bold) },

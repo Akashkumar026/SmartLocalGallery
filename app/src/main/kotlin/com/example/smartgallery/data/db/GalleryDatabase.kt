@@ -3,6 +3,8 @@ package com.example.smartgallery.data.db
 import android.content.Context
 import androidx.compose.runtime.Immutable
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -62,7 +64,8 @@ data class MediaItem(
     val isUserOverridden: Boolean = false,
     val hasSensitiveId: Boolean = false,
     val classifierVersion: Int = 0,
-    val generationModified: Long = 0L
+    val generationModified: Long = 0L,
+    val lastPositionMs: Long = 0L
 ) {
     val contentUri: android.net.Uri
         get() = if (mediaStoreId > 0L) {
@@ -345,6 +348,34 @@ interface MediaItemDao {
     """)
     fun searchFts(query: String): Flow<List<MediaItem>>
 
+    @Query("""
+        SELECT * FROM media_items
+        WHERE isHidden = 0 AND isVaultItem = 0 AND isTrashed = 0
+        AND (:query = '' OR displayName LIKE '%' || :query || '%' OR bucketName LIKE '%' || :query || '%' OR absolutePath LIKE '%' || :query || '%' OR (ocrText IS NOT NULL AND ocrText LIKE '%' || :query || '%') OR (smartCategory IS NOT NULL AND smartCategory LIKE '%' || :query || '%'))
+        AND (:mediaType IS NULL OR mimeType LIKE :mediaType || '%' OR mediaType = :mediaType)
+        AND (:category IS NULL OR smartCategory = :category)
+        AND (:isFavoriteOnly = 0 OR isFavorite = 1)
+        AND (
+            CASE 
+                WHEN dateTaken > 0 THEN dateTaken 
+                ELSE dateAdded * 1000 
+            END BETWEEN :startDateMs AND :endDateMs
+        )
+        ORDER BY 
+            CASE 
+                WHEN dateTaken > 0 THEN dateTaken 
+                ELSE dateAdded * 1000 
+            END DESC
+    """)
+    fun searchFiltered(
+        query: String = "",
+        mediaType: String? = null,
+        category: String? = null,
+        isFavoriteOnly: Int = 0,
+        startDateMs: Long = 0L,
+        endDateMs: Long = Long.MAX_VALUE
+    ): Flow<List<MediaItem>>
+
     @Query("UPDATE media_items SET isFavorite = :fav WHERE id = :id")
     suspend fun setFavorite(id: Long, fav: Boolean)
 
@@ -401,6 +432,12 @@ interface MediaItemDao {
 
     @Query("UPDATE media_items SET faceEmbeddingIds = '[]'")
     suspend fun clearAllFaceEmbeddingIds()
+
+    @Query("UPDATE media_items SET lastPositionMs = :positionMs WHERE id = :id")
+    suspend fun updateLastPosition(id: Long, positionMs: Long)
+
+    @Query("UPDATE media_items SET lastPositionMs = :positionMs WHERE absolutePath = :path")
+    suspend fun updateLastPositionByPath(path: String, positionMs: Long)
 
     @Query("DELETE FROM media_items WHERE isTrashed = 1 AND trashedAt < :cutoffTime")
     suspend fun purgeOldTrash(cutoffTime: Long): Int
@@ -631,7 +668,7 @@ interface VaultItemDao {
         MediaFts::class,
         VaultItemEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class GalleryDatabase : RoomDatabase() {
@@ -650,6 +687,12 @@ abstract class GalleryDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: GalleryDatabase? = null
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE media_items ADD COLUMN lastPositionMs INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): GalleryDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -657,6 +700,7 @@ abstract class GalleryDatabase : RoomDatabase() {
                     GalleryDatabase::class.java,
                     "smart_local_gallery.db"
                 )
+                    .addMigrations(MIGRATION_5_6)
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                     .fallbackToDestructiveMigration()
                     .addCallback(object : RoomDatabase.Callback() {

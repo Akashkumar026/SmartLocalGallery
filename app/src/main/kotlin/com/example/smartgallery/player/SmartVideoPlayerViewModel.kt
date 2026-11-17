@@ -27,6 +27,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -143,6 +144,13 @@ class SmartVideoPlayerViewModel @Inject constructor(
     val showControls: StateFlow<Boolean> get() = _showControls.asStateFlow()
     private var controlsHideJob: Job? = null
 
+    data class ResumeNotification(
+        val positionMs: Long,
+        val formattedTime: String
+    )
+    private val _resumeNotification = MutableStateFlow<ResumeNotification?>(null)
+    val resumeNotification: StateFlow<ResumeNotification?> get() = _resumeNotification.asStateFlow()
+
     // â”€â”€ A-B repeat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private val _abRepeatAMs       = MutableStateFlow(-1L)
     val abRepeatAMs: StateFlow<Long> get() = _abRepeatAMs.asStateFlow()
@@ -238,6 +246,9 @@ class SmartVideoPlayerViewModel @Inject constructor(
                 _isPlaying.value = isPlaying
                 ActivePlayerRegistry.setPlayerActive(isPlaying)
                 if (isPlaying) scheduleControlsHide() else controlsHideJob?.cancel()
+                if (!isPlaying) {
+                    savePlaybackPosition()
+                }
             }
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
@@ -258,7 +269,9 @@ class SmartVideoPlayerViewModel @Inject constructor(
                         }
                         updateCodecInfo(player)
                     }
-                    Player.STATE_ENDED -> { /* handled in service */ }
+                    Player.STATE_ENDED -> {
+                        savePlaybackPosition(0L)
+                    }
                     else -> {}
                 }
             }
@@ -308,6 +321,7 @@ class SmartVideoPlayerViewModel @Inject constructor(
 
         // Kick off A-B repeat enforcement
         startAbRepeatChecker()
+        startPeriodicPositionSaver()
     }
 
     fun bindAudioEffects(sessionId: Int) {
@@ -365,29 +379,51 @@ class SmartVideoPlayerViewModel @Inject constructor(
         }
         _currentUri.value = uri
 
-        if (uri.scheme == "vault") {
-            try {
-                val factory = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(
-                    vaultManager.getEncryptedDataSourceFactory()
-                )
-                val mediaItem = MediaItem.Builder().setUri(uri).build()
-                val mediaSource = factory.createMediaSource(mediaItem)
-                (player as? androidx.media3.exoplayer.ExoPlayer)?.let { exo ->
-                    exo.setMediaSource(mediaSource, startPositionMs)
-                    exo.prepare()
-                    exo.play()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error playing encrypted vault media: ${e.message}", e)
+        viewModelScope.launch(Dispatchers.IO) {
+            val dbItem = db.mediaItemDao().getByPath(path)
+            val playbackState = db.playbackStateDao().getByPath(path)
+            val savedPos = when {
+                startPositionMs > 0L -> startPositionMs
+                dbItem != null && dbItem.lastPositionMs > 0L -> dbItem.lastPositionMs
+                playbackState != null && playbackState.positionMs > 0L -> playbackState.positionMs
+                else -> 0L
             }
-        } else {
-            val mediaItem = MediaItem.Builder()
-                .setUri(uri)
-                .build()
-            player?.run {
-                setMediaItem(mediaItem, startPositionMs)
-                prepare()
-                play()
+            val dur = if ((dbItem?.durationMs ?: 0L) > 0L) dbItem!!.durationMs else (playbackState?.durationMs ?: 0L)
+            val shouldResume = savedPos > 3000L && (dur <= 0L || savedPos < (dur - 5000L))
+
+            withContext(Dispatchers.Main) {
+                val initialPos = if (shouldResume) savedPos else 0L
+                if (uri.scheme == "vault") {
+                    try {
+                        val factory = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(
+                            vaultManager.getEncryptedDataSourceFactory()
+                        )
+                        val mediaItem = MediaItem.Builder().setUri(uri).build()
+                        val mediaSource = factory.createMediaSource(mediaItem)
+                        (player as? androidx.media3.exoplayer.ExoPlayer)?.let { exo ->
+                            exo.setMediaSource(mediaSource, initialPos)
+                            exo.prepare()
+                            exo.play()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error playing encrypted vault media: ${e.message}", e)
+                    }
+                } else {
+                    val mediaItem = MediaItem.Builder()
+                        .setUri(uri)
+                        .build()
+                    player?.run {
+                        setMediaItem(mediaItem, initialPos)
+                        prepare()
+                        play()
+                    }
+                }
+                if (shouldResume) {
+                    _resumeNotification.value = ResumeNotification(
+                        positionMs = savedPos,
+                        formattedTime = formatTimeMmSs(savedPos)
+                    )
+                }
             }
         }
         loadBookmarksForPath(path)
@@ -451,12 +487,12 @@ class SmartVideoPlayerViewModel @Inject constructor(
     }
 
     fun adjustSpeed(delta: Float) {
-        val newSpeed = (_playbackSpeed.value + delta).coerceIn(0.1f, 8.0f)
+        val newSpeed = (_playbackSpeed.value + delta).coerceIn(0.25f, 4.0f)
         setSpeed(newSpeed)
     }
 
     fun setSpeed(speed: Float) {
-        val clamped = speed.coerceIn(0.1f, 8.0f)
+        val clamped = speed.coerceIn(0.25f, 4.0f)
         _playbackSpeed.value = clamped
         player?.setPlaybackSpeed(clamped)
     }
@@ -784,11 +820,48 @@ class SmartVideoPlayerViewModel @Inject constructor(
     // Position persistence
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    fun savePlaybackPosition() {
+    private var positionSaverJob: Job? = null
+
+    private fun startPeriodicPositionSaver() {
+        positionSaverJob?.cancel()
+        positionSaverJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(3000L)
+                val isPlaying = withContext(Dispatchers.Main) { player?.isPlaying == true }
+                if (isPlaying) {
+                    val pos = withContext(Dispatchers.Main) { player?.currentPosition ?: 0L }
+                    val dur = withContext(Dispatchers.Main) { player?.duration ?: 0L }
+                    if (dur > 0L && pos >= (dur * 0.95f).toLong()) {
+                        savePlaybackPosition(0L)
+                    } else if (pos > 1000L) {
+                        savePlaybackPosition(pos)
+                    }
+                }
+            }
+        }
+    }
+
+    fun startOver() {
+        seekTo(0L)
+        _resumeNotification.value = null
+        savePlaybackPosition(0L)
+    }
+
+    fun dismissResumeNotification() {
+        _resumeNotification.value = null
+    }
+
+    fun savePlaybackPosition(explicitPos: Long? = null) {
         val path = currentMediaPath ?: return
-        val pos  = player?.currentPosition ?: 0L
+        val pos = explicitPos ?: (player?.currentPosition ?: 0L)
+        val dur = player?.duration?.coerceAtLeast(0L) ?: 0L
+        val effectivePos = if (dur > 0L && pos >= (dur * 0.95f).toLong()) 0L else pos
+
         viewModelScope.launch(Dispatchers.IO) {
-            db.playbackStateDao().updatePosition(path, pos, System.currentTimeMillis())
+            try {
+                db.mediaItemDao().updateLastPositionByPath(path, effectivePos)
+                db.playbackStateDao().updatePosition(path, effectivePos, System.currentTimeMillis())
+            } catch (_: Exception) {}
         }
     }
 
@@ -970,6 +1043,8 @@ class SmartVideoPlayerViewModel @Inject constructor(
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     override fun onCleared() {
+        savePlaybackPosition()
+        positionSaverJob?.cancel()
         ActivePlayerRegistry.setPlayerActive(false)
         playerListener?.let { player?.removeListener(it) }
         try { equalizer?.release() } catch (_: Exception) {}
@@ -979,6 +1054,19 @@ class SmartVideoPlayerViewModel @Inject constructor(
         abRepeatJob?.cancel()
         controlsHideJob?.cancel()
         super.onCleared()
+    }
+}
+
+private fun formatTimeMmSs(ms: Long): String {
+    val totalSeconds = (ms / 1000).coerceAtLeast(0)
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return if (minutes >= 60) {
+        val hours = minutes / 60
+        val remainingMin = minutes % 60
+        String.format(Locale.US, "%d:%02d:%02d", hours, remainingMin, seconds)
+    } else {
+        String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 }
 

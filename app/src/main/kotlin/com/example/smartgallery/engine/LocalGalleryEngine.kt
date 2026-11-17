@@ -1152,8 +1152,8 @@ class LocalGalleryEngine @Inject constructor(
             }
         }
 
-        // ─── PASS 2: Agglomerative Cluster Merge (Threshold >= 0.62f) ────────
-        val mergeThreshold = 0.62f
+        // ─── PASS 2: Agglomerative Cluster Merge (Threshold >= 0.60f) ────────
+        val mergeThreshold = 0.60f
         var mergedAny = true
         while (mergedAny && activeClusters.size > 1) {
             mergedAny = false

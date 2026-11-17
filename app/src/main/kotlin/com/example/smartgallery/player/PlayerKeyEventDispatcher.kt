@@ -195,12 +195,12 @@ class PlayerKeyEventDispatcher @Inject constructor(
 
             // â”€â”€ Playback speed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             KeyEvent.KEYCODE_LEFT_BRACKET -> {
-                viewModel.adjustSpeed(-0.1f)
+                viewModel.adjustSpeed(-0.25f)
                 true
             }
 
             KeyEvent.KEYCODE_RIGHT_BRACKET -> {
-                viewModel.adjustSpeed(+0.1f)
+                viewModel.adjustSpeed(+0.25f)
                 true
             }
 

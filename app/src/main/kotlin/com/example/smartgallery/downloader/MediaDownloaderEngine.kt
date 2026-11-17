@@ -372,9 +372,11 @@ class MediaDownloaderEngine @Inject constructor(
 
     data class AvailableResolution(
         val height: Int,
-        val label: String, // e.g. "4K (2160p)", "1440p", "1080p", "720p", "480p", "360p"
-        val hasHighFps: Boolean, // fps >= 50
-        val maxFps: Int,
+        val fps: Int = 30,
+        val label: String, // e.g. "1080p • 60fps", "1080p • 30fps"
+        val formatId: String = "best",
+        val hasHighFps: Boolean = fps >= 50,
+        val maxFps: Int = fps,
         val estimatedBytes: Long = 0L
     )
 
@@ -428,56 +430,57 @@ class MediaDownloaderEngine @Inject constructor(
             vcodec != null && !vcodec.equals("none", ignoreCase = true) && fmt.height > 0
         }
 
-        val standardHeights = listOf(2160, 1440, 1080, 720, 480, 360, 240)
         val availableResList = mutableListOf<AvailableResolution>()
 
-        for (stdHeight in standardHeights) {
-            val matching = validVideoFormats.filter { it.height == stdHeight }
-            if (matching.isNotEmpty()) {
-                val maxFps = matching.maxOfOrNull { it.fps } ?: 30
-                val size = matching.mapNotNull {
+        if (validVideoFormats.isNotEmpty()) {
+            val grouped = validVideoFormats.groupBy { fmt ->
+                val rawFps = fmt.fps
+                val roundedFps = when {
+                    rawFps in 45..70 -> 60
+                    rawFps in 20..35 -> 30
+                    rawFps > 0 -> rawFps
+                    else -> 30
+                }
+                Pair(fmt.height, roundedFps)
+            }
+
+            val sortedPairs = grouped.keys.sortedWith(
+                compareByDescending<Pair<Int, Int>> { it.first }.thenByDescending { it.second }
+            )
+
+            for ((h, fps) in sortedPairs) {
+                val fmts = grouped[Pair(h, fps)] ?: emptyList()
+                val bestFmt = fmts.maxByOrNull { fmt ->
+                    val sz = fmt.fileSize.takeIf { it > 0 } ?: fmt.fileSizeApproximate
+                    val isMp4 = fmt.ext?.equals("mp4", ignoreCase = true) == true
+                    (if (isMp4) 1000000000L else 0L) + sz
+                } ?: fmts.first()
+                val size = fmts.mapNotNull {
                     if (it.fileSize > 0) it.fileSize
                     else if (it.fileSizeApproximate > 0) it.fileSizeApproximate
                     else null
                 }.maxOrNull() ?: 0L
-                val label = when (stdHeight) {
+
+                val fmtId = bestFmt.formatId ?: "best"
+                val heightLabel = when (h) {
                     2160 -> "4K (2160p)"
                     1440 -> "1440p (2K)"
                     1080 -> "1080p (FHD)"
                     720 -> "720p (HD)"
                     480 -> "480p (SD)"
                     360 -> "360p"
-                    else -> "${stdHeight}p"
+                    else -> "${h}p"
                 }
-                availableResList.add(
-                    AvailableResolution(
-                        height = stdHeight,
-                        label = label,
-                        hasHighFps = maxFps >= 50,
-                        maxFps = maxFps,
-                        estimatedBytes = size
-                    )
-                )
-            }
-        }
+                val label = "$heightLabel • ${fps}fps"
 
-        // If no standard height matched but valid formats exist
-        if (availableResList.isEmpty() && validVideoFormats.isNotEmpty()) {
-            val distinctHeights = validVideoFormats.map { it.height }.distinct().sortedDescending()
-            for (h in distinctHeights) {
-                val matching = validVideoFormats.filter { it.height == h }
-                val maxFps = matching.maxOfOrNull { it.fps } ?: 30
-                val size = matching.mapNotNull {
-                    if (it.fileSize > 0) it.fileSize
-                    else if (it.fileSizeApproximate > 0) it.fileSizeApproximate
-                    else null
-                }.maxOrNull() ?: 0L
                 availableResList.add(
                     AvailableResolution(
                         height = h,
-                        label = "${h}p",
-                        hasHighFps = maxFps >= 50,
-                        maxFps = maxFps,
+                        fps = fps,
+                        label = label,
+                        formatId = fmtId,
+                        hasHighFps = fps >= 50,
+                        maxFps = fps,
                         estimatedBytes = size
                     )
                 )
@@ -487,12 +490,16 @@ class MediaDownloaderEngine @Inject constructor(
         // Fallback for direct streams or empty formats
         if (availableResList.isEmpty()) {
             val h = info.height.takeIf { it > 0 } ?: 1080
+            val fps = 30
+            val label = if (h >= 2160) "4K (2160p) • ${fps}fps" else "${h}p • ${fps}fps"
             availableResList.add(
                 AvailableResolution(
                     height = h,
-                    label = if (h >= 2160) "4K (2160p)" else "${h}p",
+                    fps = fps,
+                    label = label,
+                    formatId = "best",
                     hasHighFps = false,
-                    maxFps = 30,
+                    maxFps = fps,
                     estimatedBytes = info.fileSize.takeIf { it > 0 } ?: info.fileSizeApproximate
                 )
             )
@@ -770,6 +777,10 @@ class MediaDownloaderEngine @Inject constructor(
                 req.addOption("--embed-thumbnail")
                 req.addOption("--add-metadata")
             } else {
+                val customFmtId = if (task.quality.contains("[fmt:")) {
+                    task.quality.substringAfter("[fmt:").substringBefore("]").trim()
+                } else null
+
                 val heightLimit = when {
                     task.quality.contains("2160", true) || task.quality.contains("Max", true) || task.quality.contains("4K", true) -> 2160
                     task.quality.contains("1440", true) -> 1440
@@ -782,7 +793,9 @@ class MediaDownloaderEngine @Inject constructor(
                 val prefer60 = task.quality.contains("60fps", ignoreCase = true) || !task.quality.contains("30fps", ignoreCase = true)
                 val mergeContainer = if (isMkv) "mkv" else "mp4"
 
-                val formatSelector = if (prefer60) {
+                val formatSelector = if (!customFmtId.isNullOrBlank() && customFmtId != "best") {
+                    "$customFmtId+bestaudio/best"
+                } else if (prefer60) {
                     "bestvideo[height<=$heightLimit][fps>=50][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit][fps>=50]+bestaudio/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
                 } else {
                     "bestvideo[height<=$heightLimit][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"

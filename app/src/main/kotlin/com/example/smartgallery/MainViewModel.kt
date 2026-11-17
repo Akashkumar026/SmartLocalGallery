@@ -26,7 +26,29 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
+import com.example.smartgallery.engine.SmartCategoryClassifier
 import javax.inject.Inject
+
+@Immutable
+enum class SearchFilterChip(val label: String) {
+    ALL("All"),
+    PHOTOS("Photos"),
+    VIDEOS("Videos"),
+    DOCUMENTS("Documents"),
+    BILLS("Bills"),
+    CERTIFICATES("Certificates"),
+    SCREENSHOTS("Screenshots"),
+    FAVORITES("Favorites")
+}
+
+@Immutable
+enum class QuickDateChip(val label: String) {
+    ALL_TIME("All Time"),
+    TODAY("Today"),
+    THIS_WEEK("This Week"),
+    THIS_MONTH("This Month"),
+    LAST_YEAR("Last Year")
+}
 
 @Immutable
 data class AlbumGroup(
@@ -85,6 +107,23 @@ class MainViewModel @Inject constructor(
 
     private val _searchResults = MutableStateFlow<List<MediaItem>>(emptyList())
     val searchResults: StateFlow<List<MediaItem>> = _searchResults.asStateFlow()
+
+    private val _searchFilter = MutableStateFlow(SearchFilterChip.ALL)
+    val searchFilter: StateFlow<SearchFilterChip> = _searchFilter.asStateFlow()
+
+    private val _selectedDateChip = MutableStateFlow(QuickDateChip.ALL_TIME)
+    val selectedDateChip: StateFlow<QuickDateChip> = _selectedDateChip.asStateFlow()
+
+    private val _customDateRange = MutableStateFlow<Pair<Long, Long>?>(null)
+    val customDateRange: StateFlow<Pair<Long, Long>?> = _customDateRange.asStateFlow()
+
+    private val _selectedPersonClusterId = MutableStateFlow<Long?>(null)
+    val selectedPersonClusterId: StateFlow<Long?> = _selectedPersonClusterId.asStateFlow()
+
+    private val _recentSearches = MutableStateFlow<List<String>>(
+        listOf("Camera", "Screenshots", "Documents", "Receipts", "Favorites")
+    )
+    val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
 
     private val _selectedTab = MutableStateFlow(0)
     val selectedTab: StateFlow<Int> = _selectedTab.asStateFlow()
@@ -150,24 +189,169 @@ class MainViewModel @Inject constructor(
         _selectedTab.value = index.coerceIn(0, 4)
     }
 
-    fun setSearchQuery(query: String) {
-        _searchQuery.value = query
-        if (query.isBlank()) {
-            _searchResults.value = emptyList()
-            return
-        }
+    private var searchJob: kotlinx.coroutines.Job? = null
 
-        viewModelScope.launch {
+    private fun computeDateRange(chip: QuickDateChip, custom: Pair<Long, Long>?): Pair<Long, Long> {
+        if (custom != null) return custom
+        val now = System.currentTimeMillis()
+        val cal = java.util.Calendar.getInstance()
+        return when (chip) {
+            QuickDateChip.ALL_TIME -> Pair(0L, Long.MAX_VALUE)
+            QuickDateChip.TODAY -> {
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+                cal.set(java.util.Calendar.MINUTE, 0)
+                cal.set(java.util.Calendar.SECOND, 0)
+                cal.set(java.util.Calendar.MILLISECOND, 0)
+                Pair(cal.timeInMillis, now)
+            }
+            QuickDateChip.THIS_WEEK -> {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -7)
+                Pair(cal.timeInMillis, now)
+            }
+            QuickDateChip.THIS_MONTH -> {
+                cal.set(java.util.Calendar.DAY_OF_MONTH, 1)
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+                cal.set(java.util.Calendar.MINUTE, 0)
+                cal.set(java.util.Calendar.SECOND, 0)
+                Pair(cal.timeInMillis, now)
+            }
+            QuickDateChip.LAST_YEAR -> {
+                val lastYear = cal.get(java.util.Calendar.YEAR) - 1
+                cal.set(lastYear, java.util.Calendar.JANUARY, 1, 0, 0, 0)
+                val start = cal.timeInMillis
+                cal.set(lastYear, java.util.Calendar.DECEMBER, 31, 23, 59, 59)
+                val end = cal.timeInMillis
+                Pair(start, end)
+            }
+        }
+    }
+
+    fun triggerSearch() {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            val query = _searchQuery.value.trim()
+            val filter = _searchFilter.value
+            val (startMs, endMs) = computeDateRange(_selectedDateChip.value, _customDateRange.value)
+            val personId = _selectedPersonClusterId.value
+
+            val mediaType = when (filter) {
+                SearchFilterChip.PHOTOS -> "image"
+                SearchFilterChip.VIDEOS -> "video"
+                else -> null
+            }
+
+            val category = when (filter) {
+                SearchFilterChip.DOCUMENTS -> SmartCategoryClassifier.CATEGORY_DOCUMENTS_IDS
+                SearchFilterChip.BILLS -> SmartCategoryClassifier.CATEGORY_BILLS_RECEIPTS
+                SearchFilterChip.CERTIFICATES -> SmartCategoryClassifier.CATEGORY_CERTIFICATES
+                SearchFilterChip.SCREENSHOTS -> SmartCategoryClassifier.CATEGORY_SCREENSHOTS
+                else -> null
+            }
+
+            val isFavoriteOnly = if (filter == SearchFilterChip.FAVORITES) 1 else 0
+
+            val hasActiveFilter = query.isNotBlank() ||
+                    filter != SearchFilterChip.ALL ||
+                    _selectedDateChip.value != QuickDateChip.ALL_TIME ||
+                    _customDateRange.value != null ||
+                    personId != null
+
+            if (!hasActiveFilter) {
+                _searchResults.value = emptyList()
+                return@launch
+            }
+
             try {
-                db.mediaItemDao().searchFts(query).collectLatest { results ->
-                    _searchResults.value = results
+                if (personId != null) {
+                    db.personMediaCrossRefDao().getMediaForCluster(personId).collectLatest { personItems ->
+                        val filtered = personItems.filter { item ->
+                            val ts = if (item.dateTaken > 0) item.dateTaken else item.dateAdded * 1000L
+                            val inDateRange = ts in startMs..endMs
+                            val matchesType = mediaType == null || item.mimeType.startsWith(mediaType)
+                            val matchesCat = category == null || item.smartCategory == category
+                            val matchesFav = isFavoriteOnly == 0 || item.isFavorite
+                            val matchesQuery = query.isBlank() ||
+                                    item.displayName.contains(query, ignoreCase = true) ||
+                                    item.absolutePath.contains(query, ignoreCase = true) ||
+                                    item.bucketName.contains(query, ignoreCase = true) ||
+                                    (item.ocrText?.contains(query, ignoreCase = true) == true) ||
+                                    (item.smartCategory?.contains(query, ignoreCase = true) == true)
+                            inDateRange && matchesType && matchesCat && matchesFav && matchesQuery && !item.isHidden && !item.isVaultItem && !item.isTrashed
+                        }
+                        _searchResults.value = filtered
+                    }
+                } else {
+                    db.mediaItemDao().searchFiltered(
+                        query = query,
+                        mediaType = mediaType,
+                        category = category,
+                        isFavoriteOnly = isFavoriteOnly,
+                        startDateMs = startMs,
+                        endDateMs = endMs
+                    ).collectLatest { results ->
+                        _searchResults.value = results
+                    }
                 }
             } catch (e: Exception) {
-                // Fallback to name match if FTS table is empty
-                val fallback = _mediaItems.value.filter { it.displayName.contains(query, ignoreCase = true) }
+                val fallback = _mediaItems.value.filter { item ->
+                    val ts = if (item.dateTaken > 0) item.dateTaken else item.dateAdded * 1000L
+                    (query.isBlank() || item.displayName.contains(query, ignoreCase = true)) &&
+                            ts in startMs..endMs &&
+                            !item.isHidden && !item.isVaultItem && !item.isTrashed
+                }
                 _searchResults.value = fallback
             }
         }
+    }
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+        triggerSearch()
+    }
+
+    fun setSearchFilter(chip: SearchFilterChip) {
+        _searchFilter.value = chip
+        triggerSearch()
+    }
+
+    fun setQuickDateChip(chip: QuickDateChip) {
+        _selectedDateChip.value = chip
+        _customDateRange.value = null
+        triggerSearch()
+    }
+
+    fun setCustomDateRange(startMs: Long, endMs: Long) {
+        _customDateRange.value = Pair(startMs, endMs)
+        _selectedDateChip.value = QuickDateChip.ALL_TIME
+        triggerSearch()
+    }
+
+    fun setSelectedPersonClusterId(clusterId: Long?) {
+        _selectedPersonClusterId.value = clusterId
+        triggerSearch()
+    }
+
+    fun addRecentSearch(query: String) {
+        if (query.isBlank()) return
+        val current = _recentSearches.value.filter { !it.equals(query.trim(), ignoreCase = true) }
+        _recentSearches.value = (listOf(query.trim()) + current).take(10)
+    }
+
+    fun removeRecentSearch(query: String) {
+        _recentSearches.value = _recentSearches.value.filter { !it.equals(query, ignoreCase = true) }
+    }
+
+    fun clearRecentSearches() {
+        _recentSearches.value = emptyList()
+    }
+
+    fun resetAllSearchFilters() {
+        _searchQuery.value = ""
+        _searchFilter.value = SearchFilterChip.ALL
+        _selectedDateChip.value = QuickDateChip.ALL_TIME
+        _customDateRange.value = null
+        _selectedPersonClusterId.value = null
+        _searchResults.value = emptyList()
     }
 
     fun hasStorageAccess(ctx: Context = context): Boolean {
