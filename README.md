@@ -21,12 +21,12 @@ Download the production-ready APK directly from the official GitHub Release:
 
 ### 🛡️ Build Verification Details
 - **Version**: `3.0.0` (versionCode `3`)
-- **Universal APK (`SmartLocalGallery-v3.0.0-Universal-All-Devices.apk`)**: `209,644,050 bytes` (~199.93 MB)
-  - SHA-256: `e040e5fc9a7e0107bbfe00d43f912e6e411529ef5ce20825f1c756235aa30094`
-- **64-bit APK (`SmartLocalGallery-v3.0.0-arm64-v8a.apk`)**: `124,893,298 bytes` (~119.11 MB)
-  - SHA-256: `4a623b8f309935cabdf6ace669ebbcbd2b2bc8e728d7eb13a3c7d1666f2dff6a`
-- **32-bit APK (`SmartLocalGallery-v3.0.0-armeabi-v7a.apk`)**: `110,804,852 bytes` (~105.67 MB)
-  - SHA-256: `014194d6a724bfe8f158317a7b1d92332b052a5d0a3ac33bda276a87e04e61e1`
+- **Universal APK (`SmartLocalGallery-v3.0.0-Universal-All-Devices.apk`)**: `209,728,998 bytes` (~200.01 MB)
+  - SHA-256: `58b43d8d2943b33eec905e7d0cc45d783e28498f9415c6c7394ed5bcb46b46b8`
+- **64-bit APK (`SmartLocalGallery-v3.0.0-arm64-v8a.apk`)**: `124,978,242 bytes` (~119.19 MB)
+  - SHA-256: `50621c5e17726c88b4e7df3073c3b5902be1106caad5bebe1741c5e2a96b0ce1`
+- **32-bit APK (`SmartLocalGallery-v3.0.0-armeabi-v7a.apk`)**: `110,889,800 bytes` (~105.75 MB)
+  - SHA-256: `945e90fb1b21a9ed2e062b46b0eacdd443d8fdbaf39c4e25177e6fddeac5c4e6`
 - **Platform Support**: Android 8.0+ (API 26–35) across ALL mobile manufacturers
 
 ---
