@@ -2,8 +2,8 @@
 
 A modern, production-grade Android Gallery, Cinema Media Player, Universal Downloader, and Encrypted Vault built with **Jetpack Compose**, **AndroidX Media3 (ExoPlayer)**, **LibVLC 3.7.5 Universal Fallback**, **100% Offline ML Kit**, and **Hardware-Backed AES-256-GCM Encryption**.
 
-[![Release](https://img.shields.io/badge/Release-v3.1.0-blue.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.1.0)
-[![Direct Download Universal APK](https://img.shields.io/badge/Download-Universal%20APK%20(All%20Devices)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.1.0/SmartLocalGallery-v3.1.0-Universal-All-Devices.apk)
+[![Release](https://img.shields.io/badge/Release-v3.2.0-blue.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.2.0)
+[![Direct Download Universal APK](https://img.shields.io/badge/Download-Universal%20APK%20(All%20Devices)-brightgreen.svg)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.2.0/SmartLocalGallery-v3.2.0-Universal-All-Devices.apk)
 [![compileSdk](https://img.shields.io/badge/compileSdk-35-orange.svg)]()
 [![minSdk](https://img.shields.io/badge/minSdk-26-yellow.svg)]()
 
@@ -13,20 +13,20 @@ A modern, production-grade Android Gallery, Cinema Media Player, Universal Downl
 
 Download the production-ready APK directly from the official GitHub Release:
 
-- 🌟 **[Download v3.1.0 Universal APK (Recommended for ALL Mobile Models)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.1.0/SmartLocalGallery-v3.1.0-Universal-All-Devices.apk)**
+- 🌟 **[Download v3.2.0 Universal APK (Recommended for ALL Mobile Models)](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.2.0/SmartLocalGallery-v3.2.0-Universal-All-Devices.apk)**
   - *Compatible with 100% of Android devices (Samsung, Xiaomi, Vivo, Oppo, Realme, OnePlus, Motorola, Pixel, Tecno, Infinix, etc.)*
-- 🚀 **[Download v3.1.0 (arm64-v8a) — For modern 64-bit devices](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.1.0/SmartLocalGallery-v3.1.0-arm64-v8a.apk)**
-- 📱 **[Download v3.1.0 (armeabi-v7a) — For budget 32-bit Samsung Galaxy A & M series](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.1.0/SmartLocalGallery-v3.1.0-armeabi-v7a.apk)**
-- 🏷️ **[View GitHub Release v3.1.0 Assets & Notes](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.1.0)**
+- 🚀 **[Download v3.2.0 (arm64-v8a) — For modern 64-bit devices](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.2.0/SmartLocalGallery-v3.2.0-arm64-v8a.apk)**
+- 📱 **[Download v3.2.0 (armeabi-v7a) — For budget 32-bit Samsung Galaxy A & M series](https://github.com/Akashkumar026/SmartLocalGallery/releases/download/v3.2.0/SmartLocalGallery-v3.2.0-armeabi-v7a.apk)**
+- 🏷️ **[View GitHub Release v3.2.0 Assets & Notes](https://github.com/Akashkumar026/SmartLocalGallery/releases/tag/v3.2.0)**
 
 ### 🛡️ Build Verification Details
-- **Version**: `3.1.0` (versionCode `4`)
-- **Universal APK (`SmartLocalGallery-v3.1.0-Universal-All-Devices.apk`)**: `209,729,002 bytes` (~200.01 MB)
-  - SHA-256: `4ee78b8edb20fe2c70b1ee768e316ca30497331d316d45c0697f4139f49f5fe5`
-- **64-bit APK (`SmartLocalGallery-v3.1.0-arm64-v8a.apk`)**: `124,978,246 bytes` (~119.19 MB)
-  - SHA-256: `5b8a3679e0b3581bbf63fd10292dd81b841dec29ed6565f42011d08b856db770`
-- **32-bit APK (`SmartLocalGallery-v3.1.0-armeabi-v7a.apk`)**: `110,889,804 bytes` (~105.75 MB)
-  - SHA-256: `d12c0ab0f6c201ee0b075e53cb1dabca92a3efd6319b8d4f84d795de2c55ff56`
+- **Version**: `3.2.0` (versionCode `5`)
+- **Universal APK (`SmartLocalGallery-v3.2.0-Universal-All-Devices.apk`)**: `209,729,906 bytes` (~200.01 MB)
+  - SHA-256: `d76b521fe52b3e1aa4f6903acc1e5297718bad6d6300ba1eddfe33990f1d5cf9`
+- **64-bit APK (`SmartLocalGallery-v3.2.0-arm64-v8a.apk`)**: `124,979,150 bytes` (~119.19 MB)
+  - SHA-256: `29a33eab5e07e082451a0e919b444b6ec7438517885a999cd5827decb6fe79f9`
+- **32-bit APK (`SmartLocalGallery-v3.2.0-armeabi-v7a.apk`)**: `110,890,708 bytes` (~105.75 MB)
+  - SHA-256: `661fbe5ec9c1422c90d202bbc3402210713026ec8c3ec7ce0199e40806aa71e9`
 - **Platform Support**: Android 8.0+ (API 26–35) across ALL mobile manufacturers
 
 ---

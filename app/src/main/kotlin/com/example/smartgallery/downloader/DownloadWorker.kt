@@ -87,7 +87,7 @@ class DownloadWorker @AssistedInject constructor(
             }
 
             // Pre-flight storage headroom verification before downloading or muxing streams
-            val stagingDir = File(appContext.cacheDir, "dl_staging/$taskId")
+            val stagingDir = MediaDownloaderEngine.getStagingDir(appContext, taskId)
             try {
                 MediaDownloaderEngine.checkStorageHeadroom(appContext, stagingDir, task.totalBytes)
             } catch (storageEx: Throwable) {
@@ -182,7 +182,7 @@ class DownloadWorker @AssistedInject constructor(
 
             if (isCancelled) {
                 android.util.Log.i("Downloader", "DownloadWorker: Task $taskId was CANCELLED gracefully.")
-                val stagingDir = File(appContext.cacheDir, "dl_staging/$taskId")
+                val stagingDir = MediaDownloaderEngine.getStagingDir(appContext, taskId)
                 stagingDir.deleteRecursively()
                 nm.cancel(notifId)
                 return@withContext Result.success()
@@ -231,9 +231,10 @@ class DownloadWorker @AssistedInject constructor(
     private fun buildNotification(title: String, progress: Int, etaSecs: Long, speed: Long = 0L): android.app.Notification {
         val speedText = if (speed > 0) " • ${MediaDownloaderEngine.formatSpeed(speed)}" else ""
         val etaText = if (etaSecs > 0) " • ETA: ${etaSecs}s" else ""
+        val statusPrefix = if (progress >= 93) "Saving to Gallery: " else ""
         return NotificationCompat.Builder(appContext, CHANNEL_ID)
-            .setContentTitle("Downloading: $title")
-            .setContentText("$progress%$speedText$etaText")
+            .setContentTitle(if (progress >= 93) "Finalizing: $title" else "Downloading: $title")
+            .setContentText("$statusPrefix$progress%$speedText$etaText")
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setProgress(100, progress, progress == 0)
             .setOngoing(true)

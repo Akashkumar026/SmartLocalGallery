@@ -336,35 +336,43 @@ class MediaDownloaderEngine @Inject constructor(
         }
 
         /**
-         * Verifies sufficient disk space in both internal cache (staging) and external storage (destination).
-         * Throws IllegalStateException with "Low Storage Space" if disk space is critically low.
+         * Resolves the persistent staging directory for a download task.
+         * Prefers app-specific external files (on shared storage) to avoid filling the internal /data partition
+         * and to prevent system cache trimming during massive 30+ hour transfers.
+         */
+        fun getStagingDir(context: Context, taskId: Long): File {
+            val base = context.getExternalFilesDir("dl_staging")
+                ?: context.externalCacheDir
+                ?: context.cacheDir
+            val dir = File(base, "$taskId")
+            if (!dir.exists()) dir.mkdirs()
+            return dir
+        }
+
+        /**
+         * Verifies sufficient disk space in staging directory and destination partition.
+         * For multi-hour/30+ hr downloads, computes remaining bytes dynamically rather than double-counting
+         * bytes already staged on disk.
          */
         fun checkStorageHeadroom(context: Context, stagingDir: File? = null, estimatedTotalBytes: Long = 0L) {
-            val cacheStat = StatFs(context.cacheDir.path)
-            val cacheAvailable = cacheStat.availableBytes
-            val extStat = StatFs(Environment.getExternalStorageDirectory().path)
-            val extAvailable = extStat.availableBytes
+            val dir = stagingDir ?: getStagingDir(context, 0L)
+            val stat = StatFs(dir.path)
+            val availableBytes = stat.availableBytes
 
-            val stagedBytes = stagingDir?.listFiles()?.sumOf { it.length() } ?: 0L
-            val requiredBytes = when {
-                estimatedTotalBytes > 0L -> (estimatedTotalBytes * 1.5).toLong()
-                stagedBytes > 0L -> (stagedBytes * 1.5).toLong()
-                else -> 250L * 1024 * 1024 // 250 MB minimum headroom
+            val stagedBytes = dir.listFiles()?.sumOf { it.length() } ?: 0L
+            val remainingToDownload = if (estimatedTotalBytes > stagedBytes) {
+                estimatedTotalBytes - stagedBytes
+            } else {
+                0L
             }
+            // Require remaining bytes to download plus 300MB safe buffer for muxing headers/tags
+            val requiredHeadroom = (remainingToDownload + 300L * 1024 * 1024).coerceAtLeast(150L * 1024 * 1024)
 
-            if (cacheAvailable < requiredBytes) {
-                val availMb = cacheAvailable / (1024 * 1024)
-                val reqMb = requiredBytes / (1024 * 1024)
+            if (availableBytes < requiredHeadroom) {
+                val availMb = availableBytes / (1024 * 1024)
+                val reqMb = requiredHeadroom / (1024 * 1024)
                 throw IllegalStateException(
-                    "Low Storage Space: Only ${availMb}MB available in cache staging, but ${reqMb}MB is required for download and stream muxing."
-                )
-            }
-
-            if (extAvailable < requiredBytes) {
-                val availMb = extAvailable / (1024 * 1024)
-                val reqMb = requiredBytes / (1024 * 1024)
-                throw IllegalStateException(
-                    "Low Storage Space: Only ${availMb}MB available on device storage, but ${reqMb}MB is required to save final media."
+                    "Low Storage Space: Only ${availMb}MB free storage remaining, but ${reqMb}MB is needed to complete the download."
                 )
             }
         }
@@ -631,8 +639,8 @@ class MediaDownloaderEngine @Inject constructor(
             throw SecurityException("Strict Offline Lockdown is active.")
         }
 
-        // Staging strictly in app-private cache directory (no POSIX permission issues for C/C++ binaries)
-        val stagingDir = File(context.cacheDir, "dl_staging/${task.id}")
+        // Staging strictly in app-private external/cache directory (no POSIX permission issues for C/C++ binaries)
+        val stagingDir = getStagingDir(context, task.id)
         if (!stagingDir.exists()) stagingDir.mkdirs()
 
         // Pre-flight storage safety check on cache staging and device storage
@@ -748,10 +756,13 @@ class MediaDownloaderEngine @Inject constructor(
                 throw RuntimeException("FFmpeg failed to extract Instagram audio (exit code: $exitCode)")
             }
 
-            onProgress(95f, finalStagedAudio.length(), finalStagedAudio.length(), 0L, 0L)
-            val publicFile = moveStagedFileToMediaStore(finalStagedAudio, isAudio = true)
+            onProgress(94f, finalStagedAudio.length(), finalStagedAudio.length(), 0L, 0L)
+            val publicFile = moveStagedFileToMediaStore(finalStagedAudio, isAudio = true, onProgress = onProgress)
             onProgress(100f, publicFile.length(), publicFile.length(), 0L, 0L)
             if (publicFile.exists() && publicFile.length() > 0L) {
+                stagingDir.deleteRecursively()
+            } else {
+                finalStagedAudio.delete()
                 stagingDir.deleteRecursively()
             }
             return@withContext publicFile
@@ -794,15 +805,28 @@ class MediaDownloaderEngine @Inject constructor(
                 val mergeContainer = if (isMkv) "mkv" else "mp4"
 
                 val formatSelector = if (!customFmtId.isNullOrBlank() && customFmtId != "best") {
-                    "$customFmtId+bestaudio/best"
+                    if (mergeContainer == "mp4") {
+                        "$customFmtId+bestaudio[ext=m4a]/$customFmtId+bestaudio/best"
+                    } else {
+                        "$customFmtId+bestaudio/best"
+                    }
                 } else if (prefer60) {
-                    "bestvideo[height<=$heightLimit][fps>=50][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit][fps>=50]+bestaudio/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                    if (mergeContainer == "mp4") {
+                        "bestvideo[height<=$heightLimit][fps>=50][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit][fps>=50]+bestaudio/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                    } else {
+                        "bestvideo[height<=$heightLimit][fps>=50]+bestaudio/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                    }
                 } else {
-                    "bestvideo[height<=$heightLimit][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                    if (mergeContainer == "mp4") {
+                        "bestvideo[height<=$heightLimit][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                    } else {
+                        "bestvideo[height<=$heightLimit]+bestaudio/best[height<=$heightLimit]/best"
+                    }
                 }
                 req.addOption("-f", formatSelector)
                 req.addOption("--merge-output-format", mergeContainer)
-                req.addOption("--postprocessor-args", "Merger:-c copy")
+                req.addOption("--postprocessor-args", "Merger:-c copy -strict -2 -movflags +use_metadata_tags")
+                req.addOption("--no-keep-video")
                 req.addOption("--add-metadata")
             }
 
@@ -851,7 +875,12 @@ class MediaDownloaderEngine @Inject constructor(
                 YoutubeDL.getInstance().execute(currentRequest, processTag) { progress, eta, line ->
                     if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
                     if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
-                    val pFloat = progress.coerceIn(0f, 95f)
+                    val isMerging = line.contains("[Merger]") || line.contains("Merging formats")
+                    val pFloat = if (isMerging) {
+                        93f
+                    } else {
+                        progress.coerceIn(0f, 92f)
+                    }
                     val etaSecs = eta.coerceAtLeast(0L)
                     val spd = parseSpeedBytes(line)
                     val parsedTotal = parseTotalBytesFromLine(line)
@@ -884,20 +913,27 @@ class MediaDownloaderEngine @Inject constructor(
         }
 
         if (!primarySuccess) {
-            Log.w(TAG, "Primary download passes failed: ${lastPrimaryEx?.message}. Attempting resilient fallback 'best/bestvideo+bestaudio'")
+            Log.w(TAG, "Primary download passes failed: ${lastPrimaryEx?.message}. Attempting resilient fallback 'bestvideo+bestaudio/best'")
             val fallbackRequest = YoutubeDLRequest(task.url).apply {
                 applyResilientFlags(this, appSettings)
-                addOption("-f", "best/bestvideo+bestaudio")
+                addOption("-f", "bestvideo+bestaudio/best")
                 addOption("-o", outTemplate)
                 addOption("--no-mtime")
                 addOption("--merge-output-format", if (isMkv) "mkv" else "mp4")
+                addOption("--postprocessor-args", "Merger:-c copy -strict -2 -movflags +use_metadata_tags")
+                addOption("--no-keep-video")
             }
 
             try {
                 YoutubeDL.getInstance().execute(fallbackRequest, processTag) { progress, eta, line ->
                     if (isTaskPaused(task.id)) throw DownloadPausedException(task.id)
                     if (isTaskCancelled(task.id)) throw DownloadCancelledException(task.id)
-                    val pFloat = progress.coerceIn(0f, 95f)
+                    val isMerging = line.contains("[Merger]") || line.contains("Merging formats")
+                    val pFloat = if (isMerging) {
+                        93f
+                    } else {
+                        progress.coerceIn(0f, 92f)
+                    }
                     val etaSecs = eta.coerceAtLeast(0L)
                     val spd = parseSpeedBytes(line)
                     val parsedTotal = parseTotalBytesFromLine(line)
@@ -963,10 +999,10 @@ class MediaDownloaderEngine @Inject constructor(
             }
         }
 
-        onProgress(95f, stagedFile.length(), stagedFile.length(), 0L, 0L)
+        onProgress(94f, stagedFile.length(), stagedFile.length(), 0L, 0L)
 
-        // Stream from staging into public MediaStore via ContentResolver Scoped Storage pipeline
-        val publicFile = moveStagedFileToMediaStore(stagedFile, isAudio = isAudio)
+        // Stream from staging into public MediaStore via ContentResolver Scoped Storage pipeline with live progress
+        val publicFile = moveStagedFileToMediaStore(stagedFile, isAudio = isAudio, onProgress = onProgress)
         onProgress(100f, publicFile.length(), publicFile.length(), 0L, 0L)
 
         // Delete staging directory ONLY after verifying final merged file exists in MediaStore with size > 0
@@ -974,16 +1010,22 @@ class MediaDownloaderEngine @Inject constructor(
             stagingDir.deleteRecursively()
             Log.i(TAG, "Download and Scoped Storage transfer complete: ${publicFile.absolutePath} (${publicFile.length()} bytes)")
         } else {
-            Log.w(TAG, "Output file in MediaStore is missing or empty, preserving staging directory: ${stagingDir.absolutePath}")
+            stagedFile.delete()
+            stagingDir.deleteRecursively()
+            Log.i(TAG, "Download complete: MediaStore entry registered, staging directory cleared.")
         }
         publicFile
     }
 
     /**
-     * Copies staged file from internal cache to public MediaStore (Movies/SmartGallery or Music/SmartGallery)
-     * using ContentResolver, openFileDescriptor, and high-performance buffered NIO FileChannel.transferTo().
+     * Copies staged file from internal/external cache staging to public MediaStore (Movies/SmartGallery or Music/SmartGallery)
+     * using ContentResolver, openFileDescriptor, buffered streaming, and live progress reporting from 94% to 100%.
      */
-    private suspend fun moveStagedFileToMediaStore(stagedFile: File, isAudio: Boolean): File = withContext(Dispatchers.IO) {
+    private suspend fun moveStagedFileToMediaStore(
+        stagedFile: File,
+        isAudio: Boolean,
+        onProgress: ((progress: Float, downloadedBytes: Long, totalBytes: Long, speed: Long, etaSecs: Long) -> Unit)? = null
+    ): File = withContext(Dispatchers.IO) {
         val collectionUri = if (isAudio) {
             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
         } else {
@@ -1017,20 +1059,41 @@ class MediaDownloaderEngine @Inject constructor(
         val pfd = context.contentResolver.openFileDescriptor(targetUri, "w")
             ?: throw IllegalStateException("Failed to open FileDescriptor to MediaStore URI: $targetUri")
 
+        val totalSize = stagedFile.length()
+        var transferred = 0L
+
         try {
-            java.io.FileInputStream(stagedFile).use { inStream ->
-                java.io.FileOutputStream(pfd.fileDescriptor).use { outStream ->
-                    val inChannel = inStream.channel
-                    val outChannel = outStream.channel
-                    var transferred = 0L
-                    val totalSize = stagedFile.length()
-                    while (transferred < totalSize) {
-                        val count = inChannel.transferTo(transferred, 1024L * 1024L * 8L, outChannel) // 8MB buffered chunks
-                        if (count <= 0) break
-                        transferred += count
+            val buffer = ByteArray(8 * 1024 * 1024) // 8MB high-performance buffer
+            var lastProgressTime = System.currentTimeMillis()
+            var lastTransferred = 0L
+
+            java.io.FileInputStream(stagedFile).buffered(8 * 1024 * 1024).use { inStream ->
+                java.io.FileOutputStream(pfd.fileDescriptor).buffered(8 * 1024 * 1024).use { outStream ->
+                    var bytesRead: Int
+                    while (inStream.read(buffer).also { bytesRead = it } != -1) {
+                        outStream.write(buffer, 0, bytesRead)
+                        transferred += bytesRead
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastProgressTime >= 1000L || transferred == totalSize) {
+                            val dt = (now - lastProgressTime) / 1000.0
+                            val speed = if (dt > 0) ((transferred - lastTransferred) / dt).toLong() else 0L
+                            val remainingBytes = (totalSize - transferred).coerceAtLeast(0L)
+                            val eta = if (speed > 0) remainingBytes / speed else 0L
+                            val pct = if (totalSize > 0L) {
+                                94f + (6f * (transferred.toDouble() / totalSize.toDouble()).toFloat()).coerceIn(0f, 6f)
+                            } else 98f
+                            onProgress?.invoke(pct, transferred, totalSize, speed, eta)
+                            lastProgressTime = now
+                            lastTransferred = transferred
+                        }
                     }
-                    outChannel.force(true)
+                    outStream.flush()
                 }
+            }
+
+            if (totalSize > 0L && transferred < totalSize) {
+                throw java.io.IOException("Incomplete file transfer: copied $transferred of $totalSize bytes")
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1045,12 +1108,31 @@ class MediaDownloaderEngine @Inject constructor(
             try { pfd.close() } catch (_: Throwable) {}
         }
 
+        // Query real physical path from MediaStore ContentResolver
+        var resolvedPath: String? = null
+        try {
+            context.contentResolver.query(
+                targetUri,
+                arrayOf(MediaStore.MediaColumns.DATA),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if (dataCol >= 0) resolvedPath = cursor.getString(dataCol)
+                }
+            }
+        } catch (_: Throwable) {}
+
         val destinationDir = if (isAudio) {
             File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "SmartGallery")
         } else {
             File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "SmartGallery")
         }
-        val publicFile = File(destinationDir, stagedFile.name)
+        val publicFile = if (!resolvedPath.isNullOrBlank()) {
+            File(resolvedPath!!)
+        } else {
+            File(destinationDir, stagedFile.name)
+        }
 
         // Notify MediaScanner
         MediaScannerConnection.scanFile(context, arrayOf(publicFile.absolutePath), arrayOf(mimeType), null)

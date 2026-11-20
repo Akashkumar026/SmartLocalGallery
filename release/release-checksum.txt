@@ -1,3 +1,3 @@
-4ee78b8edb20fe2c70b1ee768e316ca30497331d316d45c0697f4139f49f5fe5  SmartLocalGallery-v3.1.0-Universal-All-Devices.apk
-5b8a3679e0b3581bbf63fd10292dd81b841dec29ed6565f42011d08b856db770  SmartLocalGallery-v3.1.0-arm64-v8a.apk
-d12c0ab0f6c201ee0b075e53cb1dabca92a3efd6319b8d4f84d795de2c55ff56  SmartLocalGallery-v3.1.0-armeabi-v7a.apk
+d76b521fe52b3e1aa4f6903acc1e5297718bad6d6300ba1eddfe33990f1d5cf9  SmartLocalGallery-v3.2.0-Universal-All-Devices.apk
+29a33eab5e07e082451a0e919b444b6ec7438517885a999cd5827decb6fe79f9  SmartLocalGallery-v3.2.0-arm64-v8a.apk
+661fbe5ec9c1422c90d202bbc3402210713026ec8c3ec7ce0199e40806aa71e9  SmartLocalGallery-v3.2.0-armeabi-v7a.apk

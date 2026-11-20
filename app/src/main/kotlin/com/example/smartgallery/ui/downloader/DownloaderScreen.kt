@@ -325,8 +325,10 @@ class DownloaderViewModel @Inject constructor(
             engine.cancelTask(task.id)
             WorkManager.getInstance(context).cancelUniqueWork("download_${task.id}")
             WorkManager.getInstance(context).cancelAllWorkByTag("download_${task.id}")
-            val stagingDir = File(context.cacheDir, "dl_staging/${task.id}")
+            val stagingDir = MediaDownloaderEngine.getStagingDir(context, task.id)
             stagingDir.deleteRecursively()
+            // Also clean up legacy cache staging if it exists
+            File(context.cacheDir, "dl_staging/${task.id}").deleteRecursively()
             db.downloadTaskDao().delete(task)
         }
     }
@@ -1084,13 +1086,19 @@ fun DownloaderScreen(
                                             color = Color.Gray
                                         )
                                     } else {
+                                        val isSaving = task.progress >= 93f
                                         val spdText = if (task.speedBytesPerSec > 0) " • ${MediaDownloaderEngine.formatSpeed(task.speedBytesPerSec)}" else ""
                                         val sizeText = if (task.totalBytes > 0L) {
                                             " (${MediaDownloaderEngine.formatBytes(task.downloadedBytes)} / ${MediaDownloaderEngine.formatBytes(task.totalBytes)})"
                                         } else if (task.downloadedBytes > 0L) {
                                             " (${MediaDownloaderEngine.formatBytes(task.downloadedBytes)})"
                                         } else ""
-                                        Text("${task.progress.toInt()}%$spdText$sizeText", style = MaterialTheme.typography.bodySmall)
+                                        val statusText = if (isSaving) {
+                                            "${task.progress.toInt()}% • Saving to Gallery$spdText$sizeText"
+                                        } else {
+                                            "${task.progress.toInt()}%$spdText$sizeText"
+                                        }
+                                        Text(statusText, style = MaterialTheme.typography.bodySmall)
                                         if (task.etaSeconds > 0) {
                                             Text("ETA: ${task.etaSeconds}s", style = MaterialTheme.typography.bodySmall)
                                         }
